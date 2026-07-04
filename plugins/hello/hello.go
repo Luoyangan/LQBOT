@@ -11,7 +11,7 @@ import (
 
 // Register adds the "你好" listener, button command, and button interaction handler.
 func Register(r contract.CommandRegister, l contract.ListenerRegister, api contract.QQAPI) {
-	// ── Event listener: responds to "你好" in all scenes ──
+	// ── Event listener: responds to "你好" in all scenes (channel / group / C2C) ──
 	l.Subscribe(contract.Listener{
 		Event: types.EventMessageCreate,
 		Handler: func(ctx contract.EventContext) error {
@@ -21,10 +21,17 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 			return nil
 		},
 	})
-
-	// Also respond to "你好" in group and C2C scenes
 	l.Subscribe(contract.Listener{
 		Event: types.EventGroupMessageCreate,
+		Handler: func(ctx contract.EventContext) error {
+			if ctx.Content() == "你好" {
+				return ctx.Reply("你好！我是 LQBOT")
+			}
+			return nil
+		},
+	})
+	l.Subscribe(contract.Listener{
+		Event: types.EventC2CMessageCreate,
 		Handler: func(ctx contract.EventContext) error {
 			if ctx.Content() == "你好" {
 				return ctx.Reply("你好！我是 LQBOT")
@@ -165,6 +172,13 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 						ID: "btn_cmd_reply", Label: "发 Ping(引用)", Style: 0,
 						Data: "/ping", ActionType: 2, Reply: true,
 						UnsupportTips: "请升级客户端",
+					},
+				},
+				{
+					{
+						ID: "btn_hello3a", Label: "管理权限", Style: 0,
+						Data: "你好", ActionType: 2,
+						Enter: isC2C, Permission: 1,
 					},
 				},
 			}

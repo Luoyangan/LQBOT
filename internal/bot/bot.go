@@ -22,6 +22,7 @@ import (
 	"github.com/Luoyangan/LQBOT/internal/types"
 	"github.com/Luoyangan/LQBOT/internal/utils"
 	"github.com/Luoyangan/LQBOT/internal/version"
+	"github.com/Luoyangan/LQBOT/plugins/menu"
 	"github.com/Luoyangan/LQBOT/plugins/ark"
 	"github.com/Luoyangan/LQBOT/plugins/echo"
 	"github.com/Luoyangan/LQBOT/plugins/embed"
@@ -132,6 +133,7 @@ func New(cfg *types.Config) (*Bot, error) {
 // registerPlugins imports and registers all plugin packages.
 // Each plugin's Register() is called with the narrow interfaces it needs.
 func (b *Bot) registerPlugins() {
+	menu.Register(b.router)
 	ping.Register(b.router)
 	echo.Register(b.router)
 	hello.Register(b.router, b.eventBus, b.api)
