@@ -137,7 +137,7 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 				{
 					{
 						ID: "btn_github", Label: "GitHub", Style: 1,
-						URL: "https://github.com/Luoyangan",
+						URL: "https://github.com/Luoyangan/LQBOT",
 						UnsupportTips: "请使用最新版手机QQ",
 					},
 				},

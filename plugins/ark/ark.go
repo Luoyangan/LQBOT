@@ -78,7 +78,7 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 				if ctx.Scene() != contract.SceneGroup {
 					return ctx.Reply("群聊场景才能使用 /ark group。")
 				}
-				if err := ctx.ReplyArk(ark); err != nil {
+				if err := api.SendGroupArkMessage(ctx.GroupID(), ark); err != nil {
 					return ctx.Reply(fmt.Sprintf("群聊 Ark 发送失败: %s", err))
 				}
 				return ctx.Reply("群聊 Ark 消息已发送！")

@@ -75,7 +75,7 @@ func sendCustomMD(ctx contract.CommandContext, api contract.QQAPI, scene string)
 			"## 功能列表\n" +
 			"1. 文本消息\n2. 图片消息\n3. Markdown 消息\n4. 按钮交互\n\n" +
 			"> LQBOT 是基于 Go 开发的 QQ 机器人\n\n" +
-			"[🔗 GitHub](https://github.com/Luoyangan)"
+			"[🔗 GitHub](https://github.com/Luoyangan/LQBOT)"
 		if err := api.ReplyMarkdown(ctx.ChannelID(), ctx.MessageID(), md); err != nil {
 			return ctx.Reply(fmt.Sprintf("频道 Markdown 发送失败: %s", err))
 		}
@@ -96,7 +96,7 @@ func sendCustomMD(ctx contract.CommandContext, api contract.QQAPI, scene string)
 			"## 功能列表\n" +
 			"1. 文本消息\n2. 图片消息\n3. Markdown 消息\n4. 按钮交互\n\n" +
 			"> LQBOT 是基于 Go 开发的 QQ 机器人\n\n" +
-			"[🔗 GitHub](https://github.com/Luoyangan)"
+			"[🔗 GitHub](https://github.com/Luoyangan/LQBOT)"
 		if err := ctx.ReplyMarkdown(md); err != nil {
 			return ctx.Reply(fmt.Sprintf("群聊 Markdown 发送失败: %s", err))
 		}
@@ -118,7 +118,7 @@ func sendCustomMD(ctx contract.CommandContext, api contract.QQAPI, scene string)
 			"3. 参数指令: " + contract.CmdInput("/echo 你好", "点我输入", false) + "\n\n" +
 			"## 功能列表\n" +
 			"1. 文本消息\n2. 图片消息\n3. Markdown 消息\n4. 按钮交互\n\n" +
-			"[🔗 GitHub](https://github.com/Luoyangan)"
+			"[🔗 GitHub](https://github.com/Luoyangan/LQBOT)"
 		if err := api.SendC2CMarkdown(userID, md); err != nil {
 			return ctx.Reply(fmt.Sprintf("C2C Markdown 发送失败: %s", err))
 		}
@@ -202,7 +202,7 @@ func sendTemplateMD(ctx contract.CommandContext, api contract.QQAPI, scene strin
 	params := []contract.MarkdownParam{
 		{Key: "title", Values: []string{"LQBOT 通知"}},
 		{Key: "desc", Values: []string{"这是一条模板 Markdown 消息"}},
-		{Key: "link", Values: []string{"https://github.com/Luoyangan"}},
+		{Key: "link", Values: []string{"https://github.com/Luoyangan/LQBOT"}},
 	}
 
 	switch scene {
