@@ -1,4 +1,4 @@
-﻿﻿// Package markdown demonstrates markdown message sending in two modes:
+// Package markdown demonstrates markdown message sending in two modes:
 //   - Custom markdown: 原生 markdown 文本
 //   - Template markdown: 使用管理端注册的 markdown 模板
 //
@@ -50,6 +50,24 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 			default:
 				return ctx.Reply(fmt.Sprintf("未知模式: %s，请用 custom / interactive / template。", mode))
 			}
+		},
+	})
+
+	r.Register(contract.Command{
+		Name:        "mda",
+		Description: "发送 Markdown 代码消息",
+		Usage:       "mda",
+		Handler: func(ctx contract.CommandContext) error {
+			md := "## 代码演示\n\n" +
+				"```markdown\n" +
+				"# 标题\n" +
+				"**加粗文字**\n" +
+				"- 列表项\n" +
+				"```\n" +
+				"```python\n" +
+				"print('hello world')\n" +
+				"```\n"
+			return ctx.ReplyMarkdown(md)
 		},
 	})
 }

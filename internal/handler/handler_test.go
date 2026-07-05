@@ -27,7 +27,7 @@ func TestRegisterAndResolve(t *testing.T) {
 
 	var called bool
 	cmd := contract.Command{
-		Name: "ping",
+		Name:    "ping",
 		Aliases: []string{"p"},
 		Handler: func(ctx contract.CommandContext) error {
 			called = true
@@ -379,7 +379,7 @@ func TestRouterIntegration(t *testing.T) {
 	})
 
 	r.Register(contract.Command{
-		Name:    "echo",
+		Name: "echo",
 		Handler: func(ctx contract.CommandContext) error {
 			if ctx.ArgCount() == 0 {
 				return errors.New("no args")

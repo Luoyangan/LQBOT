@@ -81,9 +81,9 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 		Usage:       "button2",
 		Handler: func(ctx contract.CommandContext) error {
 			buttons := []contract.MessageButton{
-				{ID: "btn_hello", Label: "你好", Data: "btn_hello", Style: 1, ActionType: 1},       // 蓝色主按钮
-				{ID: "btn_ping", Label: "Ping", Data: "btn_ping", Style: 0, ActionType: 1},          // 灰色次要按钮
-				{ID: "btn_info", Label: "机器人信息", Data: "btn_info", Style: 0, ActionType: 1},     // 灰色次要按钮
+				{ID: "btn_hello", Label: "你好", Data: "btn_hello", Style: 1, ActionType: 1},  // 蓝色主按钮
+				{ID: "btn_ping", Label: "Ping", Data: "btn_ping", Style: 0, ActionType: 1},  // 灰色次要按钮
+				{ID: "btn_info", Label: "机器人信息", Data: "btn_info", Style: 0, ActionType: 1}, // 灰色次要按钮
 			}
 			// 存储原始命令 msg_id 供按钮回调被动回复使用
 			contract.StoreButtonMsgID(ctx.GroupID(), ctx.MessageID())
@@ -144,7 +144,7 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 				{
 					{
 						ID: "btn_github", Label: "GitHub", Style: 1,
-						URL: "https://github.com/Luoyangan/LQBOT",
+						URL:           "https://github.com/Luoyangan/LQBOT",
 						UnsupportTips: "请使用最新版手机QQ",
 					},
 				},

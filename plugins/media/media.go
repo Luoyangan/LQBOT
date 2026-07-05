@@ -19,17 +19,17 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 			imageURL := "https://wd.lilei007.cn/Luoyangan/1.png"
 
 			switch ctx.Scene() {
-		case contract.SceneGroup:
+			case contract.SceneGroup:
 				return api.SendGroupRichMedia(ctx.GroupID(), &contract.RichMedia{
-					FileType:   1,
-					URL:        imageURL,
-					MsgID:      ctx.MessageID(), // 被动回复，绕过主动消息限制
+					FileType: 1,
+					URL:      imageURL,
+					MsgID:    ctx.MessageID(), // 被动回复，绕过主动消息限制
 				})
 			case contract.SceneC2C:
 				return api.SendC2CRichMedia(ctx.AuthorID(), &contract.RichMedia{
-					FileType:   1,
-					URL:        imageURL,
-					MsgID:      ctx.MessageID(),
+					FileType: 1,
+					URL:      imageURL,
+					MsgID:    ctx.MessageID(),
 				})
 			default:
 				return api.ReplyImage(ctx.ChannelID(), ctx.MessageID(), imageURL)
@@ -48,16 +48,16 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 			switch ctx.Scene() {
 			case contract.SceneGroup:
 				return api.SendGroupRichMedia(ctx.GroupID(), &contract.RichMedia{
-					FileType:   2, // video
-					URL:        videoURL,
-					Content:    "看这个视频",
-					MsgID:      ctx.MessageID(),
+					FileType: 2, // video
+					URL:      videoURL,
+					Content:  "看这个视频",
+					MsgID:    ctx.MessageID(),
 				})
 			case contract.SceneC2C:
 				return api.SendC2CRichMedia(ctx.AuthorID(), &contract.RichMedia{
-					FileType:   2,
-					URL:        videoURL,
-					MsgID:      ctx.MessageID(),
+					FileType: 2,
+					URL:      videoURL,
+					MsgID:    ctx.MessageID(),
 				})
 			default:
 				return ctx.Reply("视频消息目前仅支持群聊和 C2C 场景。")

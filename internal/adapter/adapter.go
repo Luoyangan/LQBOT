@@ -398,15 +398,23 @@ type webhookLogger struct {
 	inner *log.Logger
 }
 
-func (l *webhookLogger) Debug(v ...interface{})               { l.inner.Debug(fmt.Sprint(v...)) }
-func (l *webhookLogger) Info(v ...interface{})                { l.inner.Info(fmt.Sprint(v...)) }
-func (l *webhookLogger) Warn(v ...interface{})                { l.inner.Warn(fmt.Sprint(v...)) }
-func (l *webhookLogger) Error(v ...interface{})               { l.inner.Error(fmt.Sprint(v...)) }
-func (l *webhookLogger) Debugf(format string, v ...interface{}) { l.inner.Debug(fmt.Sprintf(format, v...)) }
-func (l *webhookLogger) Infof(format string, v ...interface{})  { l.inner.Info(fmt.Sprintf(format, v...)) }
-func (l *webhookLogger) Warnf(format string, v ...interface{})  { l.inner.Warn(fmt.Sprintf(format, v...)) }
-func (l *webhookLogger) Errorf(format string, v ...interface{}) { l.inner.Error(fmt.Sprintf(format, v...)) }
-func (l *webhookLogger) Sync() error                            { return nil }
+func (l *webhookLogger) Debug(v ...interface{}) { l.inner.Debug(fmt.Sprint(v...)) }
+func (l *webhookLogger) Info(v ...interface{})  { l.inner.Info(fmt.Sprint(v...)) }
+func (l *webhookLogger) Warn(v ...interface{})  { l.inner.Warn(fmt.Sprint(v...)) }
+func (l *webhookLogger) Error(v ...interface{}) { l.inner.Error(fmt.Sprint(v...)) }
+func (l *webhookLogger) Debugf(format string, v ...interface{}) {
+	l.inner.Debug(fmt.Sprintf(format, v...))
+}
+func (l *webhookLogger) Infof(format string, v ...interface{}) {
+	l.inner.Info(fmt.Sprintf(format, v...))
+}
+func (l *webhookLogger) Warnf(format string, v ...interface{}) {
+	l.inner.Warn(fmt.Sprintf(format, v...))
+}
+func (l *webhookLogger) Errorf(format string, v ...interface{}) {
+	l.inner.Error(fmt.Sprintf(format, v...))
+}
+func (l *webhookLogger) Sync() error { return nil }
 
 // BackoffConfig controls reconnection backoff behavior.
 type BackoffConfig struct {

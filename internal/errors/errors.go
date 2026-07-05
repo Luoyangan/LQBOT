@@ -1,4 +1,4 @@
-﻿// Package errors defines standard error sentinels for the LQBOT framework.
+// Package errors defines standard error sentinels for the LQBOT framework.
 package errors
 
 import "errors"

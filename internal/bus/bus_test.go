@@ -15,24 +15,30 @@ type mockEventContext struct {
 	content string
 }
 
-func (m *mockEventContext) Content() string                        { return m.content }
-func (m *mockEventContext) RawContent() string                     { return m.content }
-func (m *mockEventContext) ChannelID() string                      { return "test-channel" }
-func (m *mockEventContext) AuthorID() string                       { return "test-user" }
-func (m *mockEventContext) MessageID() string                      { return "test-msg" }
-func (m *mockEventContext) IsMentioned() bool                      { return false }
-func (m *mockEventContext) GuildID() string                        { return "" }
-func (m *mockEventContext) GroupID() string                        { return "" }
-func (m *mockEventContext) Mentions() []string                     { return nil }
-func (m *mockEventContext) Attachments() []contract.Attachment     { return nil }
-func (m *mockEventContext) Scene() contract.MessageScene           { return contract.SceneGuild }
-func (m *mockEventContext) Reply(string) error                     { return nil }
-func (m *mockEventContext) ReplyMarkdown(content string) error     { return nil }
-func (m *mockEventContext) ReplyImage(url string) error            { return nil }
-func (m *mockEventContext) ReplyWithButtons(content string, buttons []contract.MessageButton) error { return nil }
-func (m *mockEventContext) ReplyWithButtonRows(content string, rows [][]contract.MessageButton) error { return nil }
+func (m *mockEventContext) Content() string                    { return m.content }
+func (m *mockEventContext) RawContent() string                 { return m.content }
+func (m *mockEventContext) ChannelID() string                  { return "test-channel" }
+func (m *mockEventContext) AuthorID() string                   { return "test-user" }
+func (m *mockEventContext) MessageID() string                  { return "test-msg" }
+func (m *mockEventContext) IsMentioned() bool                  { return false }
+func (m *mockEventContext) GuildID() string                    { return "" }
+func (m *mockEventContext) GroupID() string                    { return "" }
+func (m *mockEventContext) Mentions() []string                 { return nil }
+func (m *mockEventContext) Attachments() []contract.Attachment { return nil }
+func (m *mockEventContext) Scene() contract.MessageScene       { return contract.SceneGuild }
+func (m *mockEventContext) Reply(string) error                 { return nil }
+func (m *mockEventContext) ReplyMarkdown(content string) error { return nil }
+func (m *mockEventContext) ReplyImage(url string) error        { return nil }
+func (m *mockEventContext) ReplyWithButtons(content string, buttons []contract.MessageButton) error {
+	return nil
+}
+func (m *mockEventContext) ReplyWithButtonRows(content string, rows [][]contract.MessageButton) error {
+	return nil
+}
 func (m *mockEventContext) ReplyArk(ark *contract.MessageArk) error { return nil }
-func (m *mockEventContext) ReplyMarkdownTemplate(templateID string, params []contract.MarkdownParam) error { return nil }
+func (m *mockEventContext) ReplyMarkdownTemplate(templateID string, params []contract.MarkdownParam) error {
+	return nil
+}
 
 // --- Tests ---
 

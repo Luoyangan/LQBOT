@@ -155,8 +155,8 @@ type EmbedField struct {
 // MessageArk represents an ark template message.
 // template_id must be pre-registered on QQ Open Platform.
 type MessageArk struct {
-	TemplateID int       `json:"template_id"`       // Ark template ID
-	KV         []ArkKV   `json:"kv,omitempty"`      // Key-value params
+	TemplateID int     `json:"template_id"`  // Ark template ID
+	KV         []ArkKV `json:"kv,omitempty"` // Key-value params
 }
 
 // ArkKV is a key-value pair for ark template parameters.
@@ -215,16 +215,16 @@ type Channel struct {
 	ID       string `json:"id"`
 	GuildID  string `json:"guild_id"`
 	Name     string `json:"name"`
-	Type     int    `json:"type"`   // 0=text, 1=voice, etc.
+	Type     int    `json:"type"` // 0=text, 1=voice, etc.
 	ParentID string `json:"parent_id"`
 }
 
 // Member represents a guild member.
 type Member struct {
-	User        *User   `json:"user,omitempty"`
-	Nick        string  `json:"nick"`
-	Roles       []string `json:"roles"`
-	JoinedAt    string  `json:"joined_at"`
+	User     *User    `json:"user,omitempty"`
+	Nick     string   `json:"nick"`
+	Roles    []string `json:"roles"`
+	JoinedAt string   `json:"joined_at"`
 }
 
 // User represents a QQ user.
@@ -276,16 +276,16 @@ type MessageButton struct {
 // InteractionData represents the data from an interaction callback (button click, etc.).
 type InteractionData struct {
 	ID          string `json:"id"`
-	Type        int    `json:"type"`          // Interaction type
-	ButtonID    string `json:"button_id"`     // The button/component ID
-	ButtonData  string `json:"button_data"`   // The button's callback data
+	Type        int    `json:"type"`        // Interaction type
+	ButtonID    string `json:"button_id"`   // The button/component ID
+	ButtonData  string `json:"button_data"` // The button's callback data
 	ChannelID   string `json:"channel_id"`
 	GuildID     string `json:"guild_id"`
 	GroupOpenID string `json:"group_openid"` // Group open ID (for group chat interactions)
 	UserID      string `json:"user_id"`
 	UserOpenID  string `json:"user_openid"` // C2C user open ID (for C2C interactions)
 	MessageID   string `json:"message_id"`
-	Scene       string `json:"scene"`         // "guild", "group", or "c2c"
+	Scene       string `json:"scene"` // "guild", "group", or "c2c"
 }
 
 // InteractionHandler is the function signature for interaction event handling.
@@ -342,18 +342,18 @@ type Listener struct {
 // EventContext provides the execution environment for an event handler.
 // Fields align with QQ Official API v2 dto.Message fields.
 type EventContext interface {
-	Content() string         // Message text (with @bot prefix stripped)
-	RawContent() string      // Raw message text (including @bot)
-	ChannelID() string       // Source channel/group ID
-	AuthorID() string        // Sender ID
-	MessageID() string       // Message ID
-	IsMentioned() bool       // Whether the bot was @mentioned
-	GuildID() string         // Guild/server ID (empty for C2C/group)
-	GroupID() string         // Group chat ID (empty for guild/C2C)
-	Mentions() []string      // IDs of all mentioned users (empty if none)
+	Content() string           // Message text (with @bot prefix stripped)
+	RawContent() string        // Raw message text (including @bot)
+	ChannelID() string         // Source channel/group ID
+	AuthorID() string          // Sender ID
+	MessageID() string         // Message ID
+	IsMentioned() bool         // Whether the bot was @mentioned
+	GuildID() string           // Guild/server ID (empty for C2C/group)
+	GroupID() string           // Group chat ID (empty for guild/C2C)
+	Mentions() []string        // IDs of all mentioned users (empty if none)
 	Attachments() []Attachment // Attachments (images, files, etc.)
-	Scene() MessageScene     // Scene of the message: Guild, Group, or C2C
-	Reply(msg string) error  // Quick reply to the same channel
+	Scene() MessageScene       // Scene of the message: Guild, Group, or C2C
+	Reply(msg string) error    // Quick reply to the same channel
 	// ReplyMarkdown sends a markdown message as a passive reply to the original message.
 	// Uses msg_id for passive reply to bypass active push restrictions for public bots.
 	ReplyMarkdown(content string) error

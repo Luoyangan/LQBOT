@@ -22,7 +22,6 @@ import (
 	"github.com/Luoyangan/LQBOT/internal/types"
 	"github.com/Luoyangan/LQBOT/internal/utils"
 	"github.com/Luoyangan/LQBOT/internal/version"
-	"github.com/Luoyangan/LQBOT/plugins/menu"
 	"github.com/Luoyangan/LQBOT/plugins/ark"
 	"github.com/Luoyangan/LQBOT/plugins/echo"
 	"github.com/Luoyangan/LQBOT/plugins/embed"
@@ -31,6 +30,7 @@ import (
 	"github.com/Luoyangan/LQBOT/plugins/manage"
 	"github.com/Luoyangan/LQBOT/plugins/markdown"
 	"github.com/Luoyangan/LQBOT/plugins/media"
+	"github.com/Luoyangan/LQBOT/plugins/menu"
 	"github.com/Luoyangan/LQBOT/plugins/ping"
 	// <--new-plugin-import-here
 	"github.com/tencent-connect/botgo"
@@ -59,6 +59,9 @@ type Bot struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// Log cleanup
+	logCleanupRunning chan struct{} // closed when cleanup goroutine exits
 }
 
 // NewFromConfig creates a Bot instance from a configuration file path.
@@ -89,6 +92,17 @@ func New(cfg *types.Config) (*Bot, error) {
 		return nil, fmt.Errorf("init storage: %w", err)
 	}
 
+	// Attach database writer to logger so all logs are also saved to DB
+	logger.SetDBWriter(store, "bot", cfg.LogLevelDB)
+	if len(cfg.LogDBExclude) > 0 {
+		logger.SetDBExclude(cfg.LogDBExclude)
+	}
+	logger.Info("database logging enabled",
+		"dsn", cfg.Storage.DSN,
+		"db_level", cfg.LogLevelDB,
+		"db_exclude", cfg.LogDBExclude,
+	)
+
 	// Initialize API client
 	api := &qqAPIImpl{
 		appID:     cfg.AppID,
@@ -112,16 +126,17 @@ func New(cfg *types.Config) (*Bot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bot := &Bot{
-		cfg:      cfg,
-		logger:   logger,
-		storage:  store,
-		eventBus: eb,
-		mwChain:  mwChain,
-		router:   router,
-		api:      api,
-		rateLimiter: rl,
-		ctx:      ctx,
-		cancel:   cancel,
+		cfg:              cfg,
+		logger:           logger,
+		storage:          store,
+		eventBus:         eb,
+		mwChain:          mwChain,
+		router:           router,
+		api:              api,
+		rateLimiter:      rl,
+		ctx:              ctx,
+		cancel:           cancel,
+		logCleanupRunning: make(chan struct{}),
 	}
 
 	// Register plugins (commands + event listeners)
@@ -165,17 +180,20 @@ func (b *Bot) Run() error {
 	// 3. Initialize API client with OpenAPI
 	b.api.initOpenAPI()
 
-	// 4. Start event processing loop
+	// 4. Start log cleanup goroutine (if enabled)
+	b.startLogCleanup()
+
+	// 5. Start event processing loop
 	b.wg.Add(1)
 	go b.eventLoop()
 
 	b.logger.Info("LQBOT is running. Press Ctrl+C to stop.")
 
-	// 5. Wait for shutdown signal
+	// 6. Wait for shutdown signal
 	sig := utils.WaitForSignal()
 	b.logger.Info("received signal, shutting down", "signal", sig)
 
-	// 6. Graceful shutdown
+	// 7. Graceful shutdown
 	b.shutdown()
 	return nil
 }
@@ -264,7 +282,68 @@ func (b *Bot) processMessageEvent(eventType string, rawData json.RawMessage) {
 		return
 	}
 
-	eventCtx := newEventContext(eventType, &msg, b.api, b.adapter.BotUserID())
+	// Structured log with event context
+	b.logger.LogEvent("info", "received message", types.LogEventContext{
+		EventType: eventType,
+		ChannelID: msg.ChannelID,
+		GuildID:   msg.GuildID,
+		GroupID:   msg.GroupID,
+		AuthorID:  msg.Author.ID,
+	}, "content", msg.Content)
+
+	// Daily stats — route by scene
+	if msg.GuildID != "" {
+		// Channel/guild message
+		_ = b.storage.RecordChannelIncoming(msg.ChannelID)
+		if newCh, _ := b.storage.IsNewChannelToday(msg.ChannelID); newCh {
+			_ = b.storage.RecordChannelNewChannel()
+		}
+	} else if msg.GroupID != "" {
+		// Group message
+		_ = b.storage.RecordGroupIncoming(msg.Author.ID, msg.GroupID)
+		if newGrp, _ := b.storage.IsNewGroupToday(msg.GroupID); newGrp {
+			_ = b.storage.RecordGroupNewGroup()
+		}
+	} else {
+		// C2C message
+		_ = b.storage.RecordC2CIncoming(msg.Author.ID)
+		if newUsr, _ := b.storage.IsNewUserToday(msg.Author.ID); newUsr {
+			_ = b.storage.RecordC2CNewUser()
+		}
+	}
+
+	// Record users, groups, and channels for tracking
+	// Separate channel user IDs from group/C2C user IDs (different namespaces)
+	if msg.Author.ID != "" {
+		if msg.GuildID != "" {
+			// Channel/guild context — different ID namespace
+			_ = b.storage.RecordChannelUser(msg.Author.ID, msg.GuildID, msg.ChannelID, msg.Author.Username, msg.Content)
+		} else {
+			// Group chat or C2C — same ID namespace
+			scene := "c2c"
+			if msg.GroupID != "" {
+				scene = "group"
+			}
+			_ = b.storage.RecordUser(msg.Author.ID, msg.Author.Username, msg.Content, scene)
+		}
+	}
+	if msg.GroupID != "" {
+		_ = b.storage.RecordGroup(msg.GroupID)
+	}
+	if msg.ChannelID != "" {
+		_ = b.storage.RecordChannel(msg.ChannelID, msg.GuildID)
+	}
+
+	eventCtx := newEventContext(eventType, &msg, b.api, b.adapter.BotUserID(), func(scene string) {
+		switch scene {
+		case "c2c":
+			_ = b.storage.RecordC2COutgoing()
+		case "group":
+			_ = b.storage.RecordGroupOutgoing()
+		case "channel":
+			_ = b.storage.RecordChannelOutgoing()
+		}
+	})
 
 	// Run through middleware chain, then dispatch
 	_ = b.mwChain.Execute(eventCtx, func() error {
@@ -282,6 +361,39 @@ func (b *Bot) processMessageEvent(eventType string, rawData json.RawMessage) {
 
 // processGuildEvent handles guild/member events by forwarding to event bus.
 func (b *Bot) processGuildEvent(eventType string, rawData json.RawMessage) {
+	// Try to extract guild ID from raw data for structured logging
+	var guildMeta struct {
+		ID      string `json:"id"`
+		GuildID string `json:"guild_id"`
+	}
+	_ = json.Unmarshal(rawData, &guildMeta)
+	guildID := guildMeta.ID
+	if guildMeta.GuildID != "" {
+		guildID = guildMeta.GuildID
+	}
+
+	b.logger.LogEvent("info", "received guild event", types.LogEventContext{
+		EventType: eventType,
+		GuildID:   guildID,
+	})
+
+	// Daily stats — track guild lifecycle events
+	switch eventType {
+	case types.EventGuildCreate:
+		_ = b.storage.RecordChannelNewChannel()
+		_ = b.storage.RecordGroupNewGroup()
+	case types.EventGuildDelete:
+		_ = b.storage.RecordChannelRemoved()
+		_ = b.storage.RecordGroupRemoved()
+	default:
+		// member join/leave, message_delete — no daily counter
+	}
+
+	// Record channel/guild from guild event
+	if guildID != "" {
+		_ = b.storage.RecordChannel(guildID, guildID)
+	}
+
 	// Create a minimal event context for guild events
 	ctx := &guildEventContext{eventType: eventType, api: b.api}
 	b.eventBus.Publish(b.ctx, eventType, ctx)
@@ -295,17 +407,99 @@ func (b *Bot) processInteractionEvent(rawData json.RawMessage) {
 		return
 	}
 
+	b.logger.LogEvent("info", "received interaction", types.LogEventContext{
+		EventType: types.EventInteractionCreate,
+		ChannelID: data.ChannelID,
+		GuildID:   data.GuildID,
+		GroupID:   data.GroupOpenID,
+		AuthorID:  data.UserOpenID,
+	})
+
+	// Daily stats
+	_ = b.storage.RecordDailyInteraction()
+
+	// Record user and group from interaction
+	if data.UserOpenID != "" {
+		_ = b.storage.RecordUser(data.UserOpenID, "", "", "c2c")
+	}
+	if data.GroupOpenID != "" {
+		_ = b.storage.RecordGroup(data.GroupOpenID)
+	}
+
 	ictx := newInteractionContext(&data, b.api)
 	b.eventBus.Publish(b.ctx, types.EventInteractionCreate, ictx)
 }
 
 // executeCommand runs a matched command.
 func (b *Bot) executeCommand(cmd *contract.Command, args []string, ctx contract.EventContext) error {
+	// Daily stats
+	_ = b.storage.RecordDailyCommand()
+
 	cmdCtx := &commandContextImpl{
 		args:         args,
 		EventContext: ctx,
 	}
 	return cmd.Handler(cmdCtx)
+}
+
+// startLogCleanup starts a goroutine that periodically cleans up old log entries.
+// The cleanup interval and retention period are configured in config.yaml (storage.log_cleanup).
+// No-op if log cleanup is disabled.
+func (b *Bot) startLogCleanup() {
+	lc := b.cfg.Storage.LogCleanup
+	if !lc.Enabled {
+		b.logger.Debug("log cleanup is disabled")
+		return
+	}
+
+	interval, err := time.ParseDuration(lc.Interval)
+	if err != nil {
+		b.logger.Warn("invalid log cleanup interval, using default 24h", "error", err)
+		interval = 24 * time.Hour
+	}
+
+	retainDays := lc.RetainDays
+	if retainDays <= 0 {
+		retainDays = 30
+	}
+
+	b.logger.Info("log cleanup started",
+		"interval", interval.String(),
+		"retain_days", retainDays,
+	)
+
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		defer close(b.logCleanupRunning)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		// Run cleanup immediately on start
+		b.doLogCleanup(retainDays)
+
+		for {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-ticker.C:
+				b.doLogCleanup(retainDays)
+			}
+		}
+	}()
+}
+
+// doLogCleanup performs a single log cleanup cycle.
+func (b *Bot) doLogCleanup(retainDays int) {
+	deleted, err := b.storage.CleanupLogsByRetentionDays(retainDays)
+	if err != nil {
+		b.logger.Error("log cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		b.logger.Debug("log cleanup completed", "deleted", deleted)
+	}
 }
 
 // shutdown performs graceful shutdown of all components.
@@ -322,10 +516,10 @@ func (b *Bot) shutdown() {
 		}
 	}
 
-	// 2. Cancel main context (stops event loop)
+	// 2. Cancel main context (stops event loop + log cleanup)
 	b.cancel()
 
-	// 3. Wait for goroutines to finish
+	// 3. Wait for goroutines to finish (event loop, cleanup, etc.)
 	b.wg.Wait()
 
 	// 4. Close event bus
@@ -357,9 +551,10 @@ type eventContextImpl struct {
 	rawContent  string
 	isMentioned bool
 	scene       contract.MessageScene
+	recordOutgoing func(scene string) // records outgoing message in daily stats
 }
 
-func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, botID string) *eventContextImpl {
+func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, botID string, recordOutgoing func(scene string)) *eventContextImpl {
 	// Extract mentioned user IDs
 	var mentionIDs []string
 	for _, m := range msg.Mentions {
@@ -372,12 +567,13 @@ func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, bot
 	content, isMentioned := handler.IsMentioned(msg.Content, botID, mentionIDs)
 
 	return &eventContextImpl{
-		msg:         msg,
-		api:         api,
-		content:     content,
-		rawContent:  msg.Content,
-		isMentioned: isMentioned || scene == contract.SceneC2C, // C2C messages are always directed at bot
-		scene:       scene,
+		msg:            msg,
+		api:            api,
+		content:        content,
+		rawContent:     msg.Content,
+		isMentioned:    isMentioned || scene == contract.SceneC2C,
+		scene:          scene,
+		recordOutgoing: recordOutgoing,
 	}
 }
 
@@ -398,12 +594,12 @@ func sceneFromEventType(eventType string) contract.MessageScene {
 	}
 }
 
-func (c *eventContextImpl) Content() string      { return c.content }
-func (c *eventContextImpl) RawContent() string   { return c.rawContent }
-func (c *eventContextImpl) ChannelID() string    { return c.msg.ChannelID }
-func (c *eventContextImpl) AuthorID() string     { return c.msg.Author.ID }
-func (c *eventContextImpl) MessageID() string    { return c.msg.ID }
-func (c *eventContextImpl) IsMentioned() bool    { return c.isMentioned }
+func (c *eventContextImpl) Content() string              { return c.content }
+func (c *eventContextImpl) RawContent() string           { return c.rawContent }
+func (c *eventContextImpl) ChannelID() string            { return c.msg.ChannelID }
+func (c *eventContextImpl) AuthorID() string             { return c.msg.Author.ID }
+func (c *eventContextImpl) MessageID() string            { return c.msg.ID }
+func (c *eventContextImpl) IsMentioned() bool            { return c.isMentioned }
 func (c *eventContextImpl) Scene() contract.MessageScene { return c.scene }
 
 func (c *eventContextImpl) GuildID() string { return c.msg.GuildID }
@@ -439,17 +635,29 @@ func (c *eventContextImpl) Reply(msg string) error {
 
 		if c.msg.GroupID != "" {
 			_, err := impl.api.PostGroupMessage(ctx, c.msg.GroupID, msgToCreate)
+			if err == nil && c.recordOutgoing != nil {
+				c.recordOutgoing("group")
+			}
 			return err
 		}
 		if c.msg.DirectMessage || c.scene == contract.SceneC2C {
 			_, err := impl.api.PostC2CMessage(ctx, c.msg.Author.ID, msgToCreate)
+			if err == nil && c.recordOutgoing != nil {
+				c.recordOutgoing("c2c")
+			}
 			return err
 		}
 		// Channel message: use passive reply with msg_id to avoid active push restrictions
 		_, err := impl.api.PostMessage(ctx, c.msg.ChannelID, msgToCreate)
+		if err == nil && c.recordOutgoing != nil {
+			c.recordOutgoing("channel")
+		}
 		return err
 	}
 
+	if c.recordOutgoing != nil {
+		c.recordOutgoing("channel")
+	}
 	return c.api.SendMessage(c.msg.ChannelID, msg)
 }
 
@@ -465,14 +673,26 @@ func (c *eventContextImpl) ReplyMarkdown(content string) error {
 
 		if c.msg.GroupID != "" {
 			_, err := impl.api.PostGroupMessage(ctx, c.msg.GroupID, msgToCreate)
+			if err == nil && c.recordOutgoing != nil {
+				c.recordOutgoing("group")
+			}
 			return err
 		}
 		if c.msg.DirectMessage || c.scene == contract.SceneC2C {
 			_, err := impl.api.PostC2CMessage(ctx, c.msg.Author.ID, msgToCreate)
+			if err == nil && c.recordOutgoing != nil {
+				c.recordOutgoing("c2c")
+			}
 			return err
 		}
 		_, err := impl.api.PostMessage(ctx, c.msg.ChannelID, msgToCreate)
+		if err == nil && c.recordOutgoing != nil {
+			c.recordOutgoing("channel")
+		}
 		return err
+	}
+	if c.recordOutgoing != nil {
+		c.recordOutgoing("channel")
 	}
 	return c.api.SendMarkdown(c.msg.ChannelID, content)
 }
@@ -606,24 +826,30 @@ type guildEventContext struct {
 	api       contract.QQAPI
 }
 
-func (g *guildEventContext) Content() string    { return "" }
-func (g *guildEventContext) RawContent() string { return "" }
-func (g *guildEventContext) ChannelID() string  { return "" }
-func (g *guildEventContext) AuthorID() string   { return "" }
-func (g *guildEventContext) MessageID() string  { return "" }
-func (g *guildEventContext) IsMentioned() bool  { return false }
-func (g *guildEventContext) GuildID() string    { return "" }
-func (g *guildEventContext) GroupID() string    { return "" }
-func (g *guildEventContext) Mentions() []string { return nil }
+func (g *guildEventContext) Content() string                    { return "" }
+func (g *guildEventContext) RawContent() string                 { return "" }
+func (g *guildEventContext) ChannelID() string                  { return "" }
+func (g *guildEventContext) AuthorID() string                   { return "" }
+func (g *guildEventContext) MessageID() string                  { return "" }
+func (g *guildEventContext) IsMentioned() bool                  { return false }
+func (g *guildEventContext) GuildID() string                    { return "" }
+func (g *guildEventContext) GroupID() string                    { return "" }
+func (g *guildEventContext) Mentions() []string                 { return nil }
 func (g *guildEventContext) Attachments() []contract.Attachment { return nil }
 func (g *guildEventContext) Scene() contract.MessageScene       { return contract.SceneGuild }
 func (g *guildEventContext) Reply(msg string) error             { return nil }
 func (g *guildEventContext) ReplyMarkdown(content string) error { return nil }
 func (g *guildEventContext) ReplyImage(url string) error        { return nil }
-func (g *guildEventContext) ReplyWithButtons(content string, buttons []contract.MessageButton) error { return nil }
-func (g *guildEventContext) ReplyWithButtonRows(content string, rows [][]contract.MessageButton) error { return nil }
+func (g *guildEventContext) ReplyWithButtons(content string, buttons []contract.MessageButton) error {
+	return nil
+}
+func (g *guildEventContext) ReplyWithButtonRows(content string, rows [][]contract.MessageButton) error {
+	return nil
+}
 func (g *guildEventContext) ReplyArk(ark *contract.MessageArk) error { return nil }
-func (g *guildEventContext) ReplyMarkdownTemplate(templateID string, params []contract.MarkdownParam) error { return nil }
+func (g *guildEventContext) ReplyMarkdownTemplate(templateID string, params []contract.MarkdownParam) error {
+	return nil
+}
 
 // interactionContextImpl implements contract.InteractionContext.
 type interactionContextImpl struct {
@@ -667,13 +893,13 @@ func newInteractionContext(d *dto.WSInteractionData, api contract.QQAPI) *intera
 }
 
 func (c *interactionContextImpl) InteractionData() *contract.InteractionData { return c.data }
-func (c *interactionContextImpl) ButtonID() string                          { return c.data.ButtonID }
-func (c *interactionContextImpl) ButtonData() string                        { return c.data.ButtonData }
-func (c *interactionContextImpl) GroupOpenID() string { return c.data.GroupOpenID }
-func (c *interactionContextImpl) UserOpenID() string  { return c.data.UserOpenID }
-func (c *interactionContextImpl) UserID() string      { return c.data.UserID }
-func (c *interactionContextImpl) ChannelID() string                         { return c.data.ChannelID }
-func (c *interactionContextImpl) MessageID() string                         { return c.data.MessageID }
+func (c *interactionContextImpl) ButtonID() string                           { return c.data.ButtonID }
+func (c *interactionContextImpl) ButtonData() string                         { return c.data.ButtonData }
+func (c *interactionContextImpl) GroupOpenID() string                        { return c.data.GroupOpenID }
+func (c *interactionContextImpl) UserOpenID() string                         { return c.data.UserOpenID }
+func (c *interactionContextImpl) UserID() string                             { return c.data.UserID }
+func (c *interactionContextImpl) ChannelID() string                          { return c.data.ChannelID }
+func (c *interactionContextImpl) MessageID() string                          { return c.data.MessageID }
 func (c *interactionContextImpl) Reply(msg string) error {
 	// 使用 botgo API 直接发送被动回复，优先使用存储的 msg_id
 	if impl, ok := c.api.(*qqAPIImpl); ok && impl.api != nil {
@@ -781,13 +1007,13 @@ func (c *interactionContextImpl) DeferReply() error {
 }
 
 // EventContext interface implementation (for EventBus dispatch compatibility).
-func (c *interactionContextImpl) Content() string    { return "" }
-func (c *interactionContextImpl) RawContent() string { return "" }
-func (c *interactionContextImpl) AuthorID() string   { return c.data.UserID }
-func (c *interactionContextImpl) IsMentioned() bool  { return false }
-func (c *interactionContextImpl) GuildID() string    { return c.data.GuildID }
-func (c *interactionContextImpl) GroupID() string    { return "" }
-func (c *interactionContextImpl) Mentions() []string { return nil }
+func (c *interactionContextImpl) Content() string                    { return "" }
+func (c *interactionContextImpl) RawContent() string                 { return "" }
+func (c *interactionContextImpl) AuthorID() string                   { return c.data.UserID }
+func (c *interactionContextImpl) IsMentioned() bool                  { return false }
+func (c *interactionContextImpl) GuildID() string                    { return c.data.GuildID }
+func (c *interactionContextImpl) GroupID() string                    { return "" }
+func (c *interactionContextImpl) Mentions() []string                 { return nil }
 func (c *interactionContextImpl) Attachments() []contract.Attachment { return nil }
 func (c *interactionContextImpl) Scene() contract.MessageScene       { return contract.SceneC2C }
 
@@ -797,7 +1023,7 @@ type commandContextImpl struct {
 	contract.EventContext
 }
 
-func (c *commandContextImpl) Args() []string   { return c.args }
+func (c *commandContextImpl) Args() []string { return c.args }
 func (c *commandContextImpl) Arg(i int) string {
 	if i >= 0 && i < len(c.args) {
 		return c.args[i]
@@ -1028,9 +1254,9 @@ type fullAction struct {
 }
 
 type fullPermission struct {
-	Type            int      `json:"type"`
-	SpecifyUserIDs  []string `json:"specify_user_ids,omitempty"`
-	SpecifyRoleIDs  []string `json:"specify_role_ids,omitempty"`
+	Type           int      `json:"type"`
+	SpecifyUserIDs []string `json:"specify_user_ids,omitempty"`
+	SpecifyRoleIDs []string `json:"specify_role_ids,omitempty"`
 }
 
 // fullButton mirrors QQ API button with full action support.
@@ -1107,12 +1333,12 @@ func buildFullButton(btn *contract.MessageButton) *fullButton {
 			Style:        btn.Style,
 		},
 		Action: &fullAction{
-			Type:         actionType,
-			Permission:   perm,
-			Data:         data,
-			Enter:        btn.Enter,
-			Reply:        btn.Reply,
-			Anchor:       btn.Anchor,
+			Type:          actionType,
+			Permission:    perm,
+			Data:          data,
+			Enter:         btn.Enter,
+			Reply:         btn.Reply,
+			Anchor:        btn.Anchor,
 			UnsupportTips: btn.UnsupportTips,
 		},
 	}
@@ -1128,7 +1354,7 @@ type buttonAPIMessage struct {
 	Keyboard json.RawMessage `json:"keyboard,omitempty"`
 }
 
-func (m *buttonAPIMessage) GetEventID() string  { return "" }
+func (m *buttonAPIMessage) GetEventID() string        { return "" }
 func (m *buttonAPIMessage) GetSendType() dto.SendType { return dto.Text }
 
 // newButtonAPIMessage creates a buttonAPIMessage with full action support.
@@ -1515,7 +1741,7 @@ type activeC2CBody struct {
 	IsWakeup bool   `json:"is_wakeup"`
 }
 
-func (b *activeC2CBody) GetEventID() string       { return "" }
+func (b *activeC2CBody) GetEventID() string        { return "" }
 func (b *activeC2CBody) GetSendType() dto.SendType { return 0 }
 
 func (a *qqAPIImpl) SendActiveC2CMessage(userID, content string, isWakeup bool) error {
@@ -1605,9 +1831,9 @@ func (a *qqAPIImpl) GetGuildMember(guildID, userID string) (*contract.Member, er
 
 // uploadChannelMediaUploadRequest is the request body for channel file upload.
 type uploadChannelMediaUploadRequest struct {
-	FileType    int    `json:"file_type"`
-	URL         string `json:"url"`
-	SrvSendMsg  bool   `json:"srv_send_msg"`
+	FileType   int    `json:"file_type"`
+	URL        string `json:"url"`
+	SrvSendMsg bool   `json:"srv_send_msg"`
 }
 
 // uploadChannelMediaUploadResponse is the response body for channel file upload.
@@ -1785,15 +2011,23 @@ type botgoLogger struct {
 	*framelog.Logger
 }
 
-func (l *botgoLogger) Debug(v ...interface{})                 { l.Logger.Debug(fmt.Sprint(v...)) }
-func (l *botgoLogger) Info(v ...interface{})                  { l.Logger.Info(fmt.Sprint(v...)) }
-func (l *botgoLogger) Warn(v ...interface{})                  { l.Logger.Warn(fmt.Sprint(v...)) }
-func (l *botgoLogger) Error(v ...interface{})                 { l.Logger.Error(fmt.Sprint(v...)) }
-func (l *botgoLogger) Debugf(format string, v ...interface{}) { l.Logger.Debug(fmt.Sprintf(format, v...)) }
-func (l *botgoLogger) Infof(format string, v ...interface{})  { l.Logger.Info(fmt.Sprintf(format, v...)) }
-func (l *botgoLogger) Warnf(format string, v ...interface{})  { l.Logger.Warn(fmt.Sprintf(format, v...)) }
-func (l *botgoLogger) Errorf(format string, v ...interface{}) { l.Logger.Error(fmt.Sprintf(format, v...)) }
-func (l *botgoLogger) Sync() error                            { return nil }
+func (l *botgoLogger) Debug(v ...interface{}) { l.Logger.Debug(fmt.Sprint(v...)) }
+func (l *botgoLogger) Info(v ...interface{})  { l.Logger.Info(fmt.Sprint(v...)) }
+func (l *botgoLogger) Warn(v ...interface{})  { l.Logger.Warn(fmt.Sprint(v...)) }
+func (l *botgoLogger) Error(v ...interface{}) { l.Logger.Error(fmt.Sprint(v...)) }
+func (l *botgoLogger) Debugf(format string, v ...interface{}) {
+	l.Logger.Debug(fmt.Sprintf(format, v...))
+}
+func (l *botgoLogger) Infof(format string, v ...interface{}) {
+	l.Logger.Info(fmt.Sprintf(format, v...))
+}
+func (l *botgoLogger) Warnf(format string, v ...interface{}) {
+	l.Logger.Warn(fmt.Sprintf(format, v...))
+}
+func (l *botgoLogger) Errorf(format string, v ...interface{}) {
+	l.Logger.Error(fmt.Sprintf(format, v...))
+}
+func (l *botgoLogger) Sync() error { return nil }
 
 // ---
 // Helpers

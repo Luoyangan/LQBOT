@@ -1,4 +1,4 @@
-﻿// Package utils provides shared utility functions for the framework.
+// Package utils provides shared utility functions for the framework.
 package utils
 
 import (

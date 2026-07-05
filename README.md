@@ -11,16 +11,33 @@ LQBOT 是一个基于 Go 语言开发的 QQ 机器人框架。
 - **认证方式**: OAuth2 Client Credentials（AppID + AppSecret → Access Token）
 - **数据库**: SQLite（通过 GORM 操作）
 
-## 构建
-```powershell
-# Windows
-.\scripts\build.ps1 windows
+## 开发文档
+- [开发文档](https://github.com/Luoyangan/LQBOT/tree/main/plugins.md)
 
-# Linux
-.\scripts\build.ps1 linux
+```go
+// plugins/mycmd/mycmd.go
+package mycmd
 
-# 双平台
-.\scripts\build.ps1 all
+import "github.com/Luoyangan/LQBOT/internal/contract"
+
+func Register(r contract.CommandRegister) {
+    r.Register(contract.Command{
+        Name:        "hello",
+        Aliases:     []string{"hi"},
+        Description: "打个招呼",
+        Usage:       "hello",
+        Handler: func(ctx contract.CommandContext) error {
+            return ctx.Reply("Hello!")
+        },
+    })
+}
+```
+然后在 `internal/bot/bot.go` 的 `registerPlugins()` 中添加一行：
+```go
+func (b *Bot) registerPlugins() {
+    // ... 已有插件的 Register 调用
+    mycmd.Register(b.router)          // <-- 新增
+}
 ```
 
 ## 配置
@@ -49,6 +66,18 @@ storage:                         # 数据库配置
   driver: sqlite                 # 数据库驱动，支持 sqlite
   dsn: "data/lqbot.db"           # 数据库文件路径
 
+```
+
+## 构建
+```powershell
+# Windows
+.\scripts\build.ps1 windows
+
+# Linux
+.\scripts\build.ps1 linux
+
+# 双平台
+.\scripts\build.ps1 all
 ```
 
 ## 作者

@@ -1,4 +1,4 @@
-﻿// Package types defines public types, constants, and enumerations for LQBOT.
+// Package types defines public types, constants, and enumerations for LQBOT.
 // Event types and intents align with QQ Official API v2.
 package types
 
@@ -97,10 +97,12 @@ const (
 type Config struct {
 	AppID      string        `yaml:"app_id"`
 	AppSecret  string        `yaml:"app_secret"`
-	Sandbox    bool          `yaml:"sandbox"`     // true = sandbox mode, false = production mode
-	Intents    []string      `yaml:"intents"`     // Human-readable names, e.g. ["GUILD_MESSAGES", "GROUP_AND_C2C_EVENT"]
+	Sandbox    bool          `yaml:"sandbox"` // true = sandbox mode, false = production mode
+	Intents    []string      `yaml:"intents"` // Human-readable names, e.g. ["GUILD_MESSAGES", "GROUP_AND_C2C_EVENT"]
 	AccessType AccessType    `yaml:"access_type"`
 	LogLevel   LogLevel      `yaml:"log_level"`
+	LogLevelDB LogLevel      `yaml:"log_level_db"` // 数据库日志级别（独立于控制台），空=不写入DB
+	LogDBExclude []string    `yaml:"log_db_exclude"` // 数据库日志排除关键词列表（消息包含任一关键词则不写入DB）
 	LogNoColor bool          `yaml:"log_no_color"` // Force disable ANSI color in log output
 	Webhook    WebhookConfig `yaml:"webhook"`
 	Storage    StorageConfig `yaml:"storage"`
@@ -114,6 +116,24 @@ type WebhookConfig struct {
 
 // StorageConfig represents storage backend configuration.
 type StorageConfig struct {
-	Driver StorageDriver `yaml:"driver"`
-	DSN    string        `yaml:"dsn"`
+	Driver     StorageDriver    `yaml:"driver"`
+	DSN        string           `yaml:"dsn"`
+	LogCleanup LogCleanupConfig `yaml:"log_cleanup"`
+}
+
+// LogCleanupConfig represents periodic log cleanup configuration.
+type LogCleanupConfig struct {
+	Enabled    bool   `yaml:"enabled"`              // 是否启用日志清理
+	Interval   string `yaml:"interval"`             // 清理周期，如 "24h"（time.Duration 格式）
+	RetainDays int    `yaml:"retain_days"`           // 保留多少天的日志
+}
+
+// LogEventContext carries structured QQ event metadata for database log entries.
+// All fields are optional; unset fields should be empty strings.
+type LogEventContext struct {
+	EventType string // QQ event type, e.g. "MESSAGE_CREATE"
+	ChannelID string // Source channel ID (empty for non-message events)
+	GuildID   string // Guild/server ID (empty for group/C2C)
+	GroupID   string // Group chat ID (empty for guild/C2C)
+	AuthorID  string // Message sender ID (empty for system events)
 }

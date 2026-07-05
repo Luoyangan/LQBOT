@@ -32,7 +32,8 @@ func Register(r contract.CommandRegister) {
 				"react <表情ID> | 给消息添加表情反应（仅频道）\n" +
 				"pin <消息ID> | 将消息设为精华（仅频道）\n" +
 				"unpin <消息ID> | 取消精华消息（仅频道）\n" +
-				"md | 发送 Markdown 消息（自定义/模板/交互）\n",
+				"md | 发送 Markdown 消息（自定义/模板/交互）\n" +
+				"mda | 发送 Markdown 代码消息\n",
 			)
 		},
 	})

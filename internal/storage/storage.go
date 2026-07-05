@@ -1,4 +1,4 @@
-﻿﻿// Package storage implements the Storage interface using GORM + SQLite.
+// Package storage implements the Storage interface using GORM + SQLite.
 package storage
 
 import (
@@ -27,9 +27,27 @@ func New(cfg types.StorageConfig) (*Storage, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Auto-migrate the KV table
+	// Auto-migrate tables
 	if err := db.AutoMigrate(&KVEntry{}); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
+	}
+	if err := migrateLogTable(db); err != nil {
+		return nil, fmt.Errorf("migrate log table: %w", err)
+	}
+	if err := migrateUserTable(db); err != nil {
+		return nil, fmt.Errorf("migrate user table: %w", err)
+	}
+	if err := migrateGroupTable(db); err != nil {
+		return nil, fmt.Errorf("migrate group table: %w", err)
+	}
+	if err := migrateChannelTable(db); err != nil {
+		return nil, fmt.Errorf("migrate channel table: %w", err)
+	}
+	if err := migrateChannelUserTable(db); err != nil {
+		return nil, fmt.Errorf("migrate channel user table: %w", err)
+	}
+	if err := migrateDailyTable(db); err != nil {
+		return nil, fmt.Errorf("migrate daily table: %w", err)
 	}
 
 	return &Storage{
@@ -98,4 +116,13 @@ func (s *Storage) Close() error {
 		return fmt.Errorf("get underlying db: %w", err)
 	}
 	return sqlDB.Close()
+}
+
+// truncate returns s truncated to at most max runes.
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
