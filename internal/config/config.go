@@ -33,22 +33,25 @@ func Init(path string) string {
 	log.Printf("[config] no config files found, creating minimal %s", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
 		minimal := `# LQBOT 配置文件
-app_id: "your_app_id_here"
-app_secret: "your_app_secret_here"
-sandbox: false
+app_id: "your_app_id_here"       # QQ 开放平台申请的 AppID
+app_secret: "your_app_secret_here" # QQ 开放平台申请的 AppSecret
+sandbox: false                    # true = 沙箱模式, false = 生产模式
 intents:
-  - GUILD_MESSAGES
-  - GROUP_AND_C2C_EVENT
-access_type: websocket
+  # 公域机器人请使用 AT_MESSAGES 代替 GUILD_MESSAGES
+  #- AT_MESSAGES                  # @机器人消息（公域机器人用这个）
+  - GUILD_MESSAGES               # 频道全部消息（仅私域机器人可用）
+  - GROUP_AND_C2C_EVENT          # 群聊和私聊（需申请权限）
+  - INTERACTION                  # 按钮/选择框交互事件
+access_type: websocket           # websocket | webhook
 log_level: info
 
-webhook:
-  port: 9000
-  path: /webhook
+webhook:                         # webhook 模式配置（access_type: webhook 时生效）
+  port: 8080                     # HTTP 监听端口
+  path: /webhook                 # 回调路径
 
-storage:
-  driver: sqlite
-  dsn: "data/lqbot.db"
+storage:                         # 数据库配置
+  driver: sqlite                 # 数据库驱动，支持 sqlite
+  dsn: "data/lqbot.db"           # 数据库文件路径
 `
 		_ = os.WriteFile(path, []byte(minimal), 0644)
 	}

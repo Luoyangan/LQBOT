@@ -1,4 +1,4 @@
-﻿// Package storage implements the Storage interface using GORM + SQLite.
+﻿﻿// Package storage implements the Storage interface using GORM + SQLite.
 package storage
 
 import (

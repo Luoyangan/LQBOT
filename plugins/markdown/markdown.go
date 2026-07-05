@@ -1,4 +1,4 @@
-﻿// Package markdown demonstrates markdown message sending in two modes:
+﻿﻿// Package markdown demonstrates markdown message sending in two modes:
 //   - Custom markdown: 原生 markdown 文本
 //   - Template markdown: 使用管理端注册的 markdown 模板
 //

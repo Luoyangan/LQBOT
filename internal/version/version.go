@@ -15,7 +15,7 @@ import "fmt"
 // Build-time overridden values (set via -ldflags -X).
 var (
 	App     = "LQBOT"
-	Version = "0.3.4"
+	Version = "0.3.5"
 	Commit  = "unknown"
 	Date    = "unknown"
 )
