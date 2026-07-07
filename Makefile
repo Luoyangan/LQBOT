@@ -10,6 +10,9 @@ LDFLAGS     := -s -w \
 
 .PHONY: build build-windows build-linux build-all clean
 
+run: configs/config.yaml  ## 开发运行（自动注入 git 信息）
+	go run -ldflags="$(LDFLAGS)" $(CMD_PATH) -c configs/config.yaml
+
 build:  ## 构建当前系统版本
 	go build -ldflags="$(LDFLAGS)" -o $(APP_NAME)-v$(VERSION)-$(GIT_COMMIT) $(CMD_PATH)
 

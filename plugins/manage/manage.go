@@ -38,6 +38,32 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 		},
 	})
 
+	r.Register(contract.Command{
+		Name:        "deletes",
+		Description: "撤回消息（仅群主/管理员可用）",
+		Usage:       "deletes <消息ID>",
+		Handler: func(ctx contract.CommandContext) error {
+			// 权限检查：仅群聊场景，且仅群主/管理员可用
+			if ctx.Scene() != contract.SceneGroup {
+				return ctx.Reply("该命令仅支持群聊使用。")
+			}
+			role := ctx.Role()
+			if role != "owner" && role != "admin" {
+				return ctx.Reply("仅群主和管理员可使用此命令。")
+			}
+
+			if ctx.ArgCount() == 0 {
+				return ctx.Reply("用法: /deletes <消息ID>")
+			}
+			msgID := ctx.Arg(0)
+
+			if err := api.DeleteGroupMessage(ctx.GroupID(), msgID); err != nil {
+				return ctx.Reply("撤回失败: " + err.Error())
+			}
+			return ctx.Reply("消息已撤回。")
+		},
+	})
+
 	// /react — add a reaction to the replied message
 	r.Register(contract.Command{
 		Name:        "react",

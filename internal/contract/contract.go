@@ -3,8 +3,10 @@ package contract
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"sync"
+	"time"
 )
 
 // Logger abstracts logging for plugins.
@@ -237,10 +239,19 @@ type User struct {
 
 // MessageButton represents an interactive button component.
 // Fields align with QQ Official API v2 button action definitions.
+//
+// Button visual states (render_data):
+//   Normal → Label     — 按钮上的文字
+//   Press  → VisitedLabel — 点击后按钮上显示的文字（为空时与 Label 相同）
+//   Loading → 客户端自动展示 loading 动画，需通过 DeferReply/PutInteraction 响应解除
 type MessageButton struct {
 	ID    string `json:"id"`    // Button ID (unique within a message)
-	Label string `json:"label"` // Button label text
+	Label string `json:"label"` // Normal state: button label text
 	Style int    `json:"style"` // 0: grey outline, 1: blue outline, 3: red text+white bg, 4: blue bg+white text
+
+	// VisitedLabel sets the button text after being clicked (Press state).
+	// When empty, defaults to Label text.
+	VisitedLabel string `json:"visited_label,omitempty"`
 	Data  string `json:"data"`  // Action data: callback data (type=1), command (type=2)
 
 	// URL sets the button as a jump button (ActionType=0).
@@ -346,6 +357,7 @@ type EventContext interface {
 	RawContent() string        // Raw message text (including @bot)
 	ChannelID() string         // Source channel/group ID
 	AuthorID() string          // Sender ID
+	Role() string              // Sender role in group: "owner", "admin", "member" (empty for non-group)
 	MessageID() string         // Message ID
 	IsMentioned() bool         // Whether the bot was @mentioned
 	GuildID() string           // Guild/server ID (empty for C2C/group)
@@ -421,6 +433,24 @@ type CommandRegister interface {
 // ListenerRegister is the narrow interface plugins use to subscribe to events.
 type ListenerRegister interface {
 	Subscribe(listener Listener)
+}
+
+// Scheduler is the narrow interface for registering scheduled/cron tasks.
+type Scheduler interface {
+	// Every registers a cron expression task. Cron format: "0 8 * * *" (sec min hour dom mon dow).
+	Every(cronExpr string, fn func()) error
+	// Interval registers a task that runs repeatedly at the given interval.
+	Interval(d time.Duration, fn func()) error
+}
+
+// HTTPServer is the narrow interface for registering HTTP routes.
+// Only available when the embedded HTTP server is enabled in config.
+type HTTPServer interface {
+	// Handle registers an HTTP handler for the given path.
+	// Path should start with "/", e.g. "/webhook/custom".
+	Handle(path string, handler http.HandlerFunc)
+	// ServeMux returns the underlying http.ServeMux for advanced use.
+	ServeMux() *http.ServeMux
 }
 
 // Plugin is the optional interface a plugin package can implement

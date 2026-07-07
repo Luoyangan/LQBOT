@@ -4,6 +4,7 @@ package hello
 
 import (
 	"strings"
+	"time"
 
 	"github.com/Luoyangan/LQBOT/internal/contract"
 	"github.com/Luoyangan/LQBOT/internal/types"
@@ -69,6 +70,10 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 				return ic.Reply("Pong! 机器人运行正常 ✓")
 			case "btn_info":
 				return ic.Reply("LQBOT - 基于 Go 的 QQ 机器人\n技术栈: Go + botgo SDK + SQLite\n支持: 文本 / Markdown / Ark / 按钮交互")
+			case "btn_loading":
+				// 模拟耗时操作演示 Loading 状态
+				time.Sleep(3 * time.Second)
+				return ic.Reply("处理完成！你体验到了 Loading 状态 👆")
 			default:
 				return ic.Reply("按钮已点击 (ID: " + ic.ButtonID() + ")")
 			}
@@ -101,7 +106,7 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 			rows := [][]contract.MessageButton{
 				// 第 1 行：1 个按钮（蓝色主按钮）
 				{
-					{ID: "btn_hello", Label: "你好", Data: "btn_hello", Style: 1, ActionType: 1},
+					{ID: "btn_qqqqq", Label: "添加到群", URL: "https://web.qun.qq.com/qunrobot/jump.html?robot_uin=4010349736&target=2", Style: 1},
 				},
 				// 第 2 行：2 个按钮（灰色次要按钮）
 				{
@@ -111,8 +116,8 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 				// 第 3 行：3 个按钮（混合样式）
 				{
 					{ID: "btn_hello", Label: "你好", Data: "btn_hello", Style: 1, ActionType: 1},
-					{ID: "btn_ping", Label: "Ping", Data: "btn_ping", Style: 2, ActionType: 1},
-					{ID: "btn_info", Label: "信息", Data: "btn_info", Style: 3, ActionType: 1},
+					{ID: "btn_aaaa", Label: "a", Data: "btn_ping", Style: 2, ActionType: 1},
+					{ID: "btn_wwww", Label: "b", Data: "btn_info", Style: 3, ActionType: 1},
 				},
 				// 第 4 行：跳转按钮 (使用 URL 字段替代 ActionType: 0，避免 Go 零值歧义)
 				{
@@ -185,6 +190,49 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 			contract.StoreButtonMsgID(ctx.GroupID(), ctx.MessageID())
 			return ctx.ReplyWithButtonRows(
 				"按钮 Action 类型演示：[跳转] [指令] [回调]",
+				rows,
+			)
+		},
+	})
+
+	// ── 命令：/buttonstate 演示按钮 3 种视觉状态 ──
+	// Normal → Label（默认文字）
+	// Press  → VisitedLabel（点击后文字，为空时退回到 Label）
+	// Loading → 客户端自动展示，需通过 DeferReply() 响应解除
+	r.Register(contract.Command{
+		Name:        "buttonstate",
+		Description: "演示按钮 3 种状态：Normal / Press / Loading",
+		Usage:       "buttonstate",
+		Handler: func(ctx contract.CommandContext) error {
+			isC2C := ctx.Scene() == contract.SceneC2C
+			rows := [][]contract.MessageButton{
+				// 第 1 行：仅 Normal 态（不设 VisitedLabel，按压后文字不变）
+				{
+					{ID: "btn_normal", Label: "普通按钮", Style: 0,
+						Data: "click_normal", ActionType: 1},
+				},
+				// 第 2 行：Normal + Press 文字不同（设 VisitedLabel）
+				{
+					{ID: "btn_press", Label: "点赞", VisitedLabel: "已点赞 ✓", Style: 1,
+						Data: "click_press", ActionType: 1,
+						UnsupportTips: "请升级客户端体验按压态效果"},
+				},
+				// 第 3 行：Loading 演示 — 回调延 3 秒响应，客户端保持 loading 动画
+				{
+					{ID: "btn_loading", Label: "耗时操作", VisitedLabel: "处理中…", Style: 0,
+						Data: "click_loading", ActionType: 1,
+						UnsupportTips: "请升级客户端"},
+				},
+				// 第 4 行：指令按钮 + VisitedLabel
+				{
+					{ID: "btn_cmd", Label: "发 Ping", VisitedLabel: "已发送", Style: 4,
+						Data: "/ping", ActionType: 2,
+						Enter: isC2C, UnsupportTips: "请升级客户端"},
+				},
+			}
+			contract.StoreButtonMsgID(ctx.GroupID(), ctx.MessageID())
+			return ctx.ReplyWithButtonRows(
+				"按钮 3 种状态演示：\n🟦 Normal  → 默认文字\n🟩 Press    → 点击后变文字\n⏳ Loading → 点击后等待处理",
 				rows,
 			)
 		},

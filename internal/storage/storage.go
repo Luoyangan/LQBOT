@@ -15,6 +15,7 @@ import (
 type Storage struct {
 	mu   sync.RWMutex
 	db   *gorm.DB
+	dsn  string
 	data map[string]string // Simple KV cache
 }
 
@@ -52,6 +53,7 @@ func New(cfg types.StorageConfig) (*Storage, error) {
 
 	return &Storage{
 		db:   db,
+		dsn:  cfg.DSN,
 		data: make(map[string]string),
 	}, nil
 }
@@ -116,6 +118,21 @@ func (s *Storage) Close() error {
 		return fmt.Errorf("get underlying db: %w", err)
 	}
 	return sqlDB.Close()
+}
+
+// DSN returns the database DSN/path string.
+func (s *Storage) DSN() string { return s.dsn }
+
+// DB returns the underlying GORM database for advanced queries.
+func (s *Storage) DB() *gorm.DB { return s.db }
+
+// TableRowCount returns the row count for the given model table.
+func (s *Storage) TableRowCount(model interface{}) (int64, error) {
+	var count int64
+	if err := s.db.Model(model).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count table: %w", err)
+	}
+	return count, nil
 }
 
 // truncate returns s truncated to at most max runes.

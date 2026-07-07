@@ -7,34 +7,67 @@ import "github.com/tencent-connect/botgo/dto"
 // Event type constants from QQ Official API v2.
 // These map to the "t" field in WebSocket WSPayload and "t" field in webhook payloads.
 const (
-	// Guild channel messages (need GUILD_MESSAGES intent)
+	// === Guild events (GUILDS intent) ===
+	EventGuildCreate   = string(dto.EventGuildCreate)   // "GUILD_CREATE"
+	EventGuildUpdate   = string(dto.EventGuildUpdate)   // "GUILD_UPDATE"
+	EventGuildDelete   = string(dto.EventGuildDelete)   // "GUILD_DELETE"
+	EventChannelCreate = string(dto.EventChannelCreate) // "CHANNEL_CREATE"
+	EventChannelUpdate = string(dto.EventChannelUpdate) // "CHANNEL_UPDATE"
+	EventChannelDelete = string(dto.EventChannelDelete) // "CHANNEL_DELETE"
+
+	// === Guild member events (GUILD_MEMBERS intent) ===
+	EventMemberJoin   = string(dto.EventGuildMemberAdd)    // "GUILD_MEMBER_ADD"
+	EventMemberUpdate = string(dto.EventGuildMemberUpdate) // "GUILD_MEMBER_UPDATE"
+	EventMemberLeave  = string(dto.EventGuildMemberRemove) // "GUILD_MEMBER_REMOVE"
+
+	// === Guild message events (GUILD_MESSAGES intent) ===
 	EventMessageCreate = string(dto.EventMessageCreate) // "MESSAGE_CREATE"
-
-	// @bot messages in public guild channels (need GUILD_AT_MESSAGE intent)
-	EventAtMessageCreate = string(dto.EventAtMessageCreate) // "AT_MESSAGE_CREATE"
-
-	// @bot messages in group chats (need GROUP_AND_C2C_EVENT intent)
-	EventGroupAtMessageCreate = string(dto.EventGroupAtMessageCreate) // "GROUP_AT_MESSAGE_CREATE"
-
-	// Direct messages / C2C (need GROUP_AND_C2C_EVENT intent)
-	EventC2CMessageCreate = string(dto.EventC2CMessageCreate) // "C2C_MESSAGE_CREATE"
-
-	// Message deleted
 	EventMessageDelete = string(dto.EventMessageDelete) // "MESSAGE_DELETE"
 
-	// Guild events
-	EventGuildCreate = string(dto.EventGuildCreate) // "GUILD_CREATE"
-	EventGuildDelete = string(dto.EventGuildDelete) // "GUILD_DELETE"
+	// === Guild message reactions (GUILD_MESSAGE_REACTIONS intent) ===
+	EventReactionAdd    = string(dto.EventMessageReactionAdd)    // "MESSAGE_REACTION_ADD"
+	EventReactionRemove = string(dto.EventMessageReactionRemove) // "MESSAGE_REACTION_REMOVE"
 
-	// Member events
-	EventMemberJoin  = string(dto.EventGuildMemberAdd)    // "GUILD_MEMBER_ADD"
-	EventMemberLeave = string(dto.EventGuildMemberRemove) // "GUILD_MEMBER_REMOVE"
+	// === Guild @bot message events (AT_MESSAGES / GUILD_AT_MESSAGE intent) ===
+	EventAtMessageCreate   = string(dto.EventAtMessageCreate)   // "AT_MESSAGE_CREATE"
+	EventPublicMessageDel  = string(dto.EventPublicMessageDelete) // "PUBLIC_MESSAGE_DELETE"
 
-	// Interaction events (button clicks, select menus)
-	EventInteractionCreate = string(dto.EventInteractionCreate) // "INTERACTION_CREATE"
+	// === Guild direct message events (DIRECT_MESSAGE intent) ===
+	EventDirectMsgCreate = string(dto.EventDirectMessageCreate) // "DIRECT_MESSAGE_CREATE"
+	EventDirectMsgDelete = string(dto.EventDirectMessageDelete) // "DIRECT_MESSAGE_DELETE"
 
+	// === Group & C2C events (GROUP_AND_C2C_EVENT intent) ===
+	EventGroupAtMessageCreate = string(dto.EventGroupAtMessageCreate) // "GROUP_AT_MESSAGE_CREATE"
+	EventC2CMessageCreate     = string(dto.EventC2CMessageCreate)     // "C2C_MESSAGE_CREATE"
+	EventFriendAdd            = string(dto.EventC2CFriendAdd)          // "FRIEND_ADD"
+	EventFriendDel            = string(dto.EventC2CFriendDel)          // "FRIEND_DEL"
+	EventSubscribeMsgStatus   = string(dto.EventSubscribeMsgStatus)   // "SUBSCRIBE_MESSAGE_STATUS"
+	EventEnterAIO             = string(dto.EventEnterAIO)             // "ENTER_AIO"
 	// Group messages (new QQ API v2 event, no @ required)
 	EventGroupMessageCreate = "GROUP_MESSAGE_CREATE"
+
+	// === Interaction events (INTERACTION intent) ===
+	EventInteractionCreate = string(dto.EventInteractionCreate) // "INTERACTION_CREATE"
+
+	// === Message audit events (MESSAGE_AUDIT intent) ===
+	EventAuditPass   = string(dto.EventMessageAuditPass)   // "MESSAGE_AUDIT_PASS"
+	EventAuditReject = string(dto.EventMessageAuditReject) // "MESSAGE_AUDIT_REJECT"
+
+	// === Forum events (FORUMS_EVENT intent) ===
+	EventForumThreadCreate  = string(dto.EventForumThreadCreate)  // "FORUM_THREAD_CREATE"
+	EventForumThreadUpdate  = string(dto.EventForumThreadUpdate)  // "FORUM_THREAD_UPDATE"
+	EventForumThreadDelete  = string(dto.EventForumThreadDelete)  // "FORUM_THREAD_DELETE"
+	EventForumPostCreate    = string(dto.EventForumPostCreate)    // "FORUM_POST_CREATE"
+	EventForumPostDelete    = string(dto.EventForumPostDelete)    // "FORUM_POST_DELETE"
+	EventForumReplyCreate   = string(dto.EventForumReplyCreate)   // "FORUM_REPLY_CREATE"
+	EventForumReplyDelete   = string(dto.EventForumReplyDelete)   // "FORUM_REPLY_DELETE"
+	EventForumAuditResult   = string(dto.EventForumAuditResult)   // "FORUM_PUBLISH_AUDIT_RESULT"
+
+	// === Audio events (AUDIO_ACTION intent) ===
+	EventAudioStart  = string(dto.EventAudioStart)  // "AUDIO_START"
+	EventAudioFinish = string(dto.EventAudioFinish) // "AUDIO_FINISH"
+	EventAudioOnMic  = string(dto.EventAudioOnMic)  // "AUDIO_ON_MIC"
+	EventAudioOffMic = string(dto.EventAudioOffMic) // "AUDIO_OFF_MIC"
 )
 
 // IntentList maps human-readable intent names to botgo's dto.Intent bitmask values.
@@ -43,14 +76,15 @@ var IntentList = map[string]dto.Intent{
 	"GUILDS":              dto.IntentGuilds,
 	"GUILD_MEMBERS":       dto.IntentGuildMembers,
 	"GUILD_MESSAGES":      dto.IntentGuildMessages,
+	"GUILD_MESSAGE_REACTIONS": dto.IntentGuildMessageReactions,
 	"GUILD_AT_MESSAGE":    dto.IntentGuildAtMessage,
 	"AT_MESSAGES":         dto.IntentGuildAtMessage, // alias for GUILD_AT_MESSAGE
-	"GROUP_AND_C2C_EVENT": dto.IntentGroupMessages,
 	"DIRECT_MESSAGE":      dto.IntentDirectMessages,
+	"GROUP_AND_C2C_EVENT": dto.IntentGroupMessages,
 	"INTERACTION":         dto.IntentInteraction,
 	"MESSAGE_AUDIT":       dto.IntentAudit,
-	"FORUM":               dto.IntentForum,
-	"AUDIO":               dto.IntentAudio,
+	"FORUMS_EVENT":        dto.IntentForum,
+	"AUDIO_ACTION":        dto.IntentAudio,
 }
 
 // IntentsToBitmask converts a list of human-readable intent names to a dto.Intent bitmask.
@@ -106,12 +140,24 @@ type Config struct {
 	LogNoColor bool          `yaml:"log_no_color"` // Force disable ANSI color in log output
 	Webhook    WebhookConfig `yaml:"webhook"`
 	Storage    StorageConfig `yaml:"storage"`
+	HTTP       HTTPConfig    `yaml:"http"`       // 内嵌 HTTP 服务配置
+	Permissions map[string]string `yaml:"permissions"` // 指令权限映射: 指令名 → 权限级别
+	Plugins    map[string]interface{} `yaml:"plugins"` // 插件独立配置
 }
 
 // WebhookConfig represents webhook adapter configuration.
 type WebhookConfig struct {
 	Port int    `yaml:"port"`
 	Path string `yaml:"path"`
+}
+
+// HTTPConfig represents the embedded HTTP server configuration.
+type HTTPConfig struct {
+	Enabled  bool   `yaml:"enabled"`   // 是否启用内嵌 HTTP 服务
+	Port     int    `yaml:"port"`      // HTTP 监听端口（默认 80）
+	Admin    bool   `yaml:"admin"`     // 是否启用网页管理界面
+	CertFile string `yaml:"cert_file"` // SSL 证书文件路径（为空则不启用 SSL）
+	KeyFile  string `yaml:"key_file"`  // SSL 私钥文件路径（为空则不启用 SSL）
 }
 
 // StorageConfig represents storage backend configuration.
@@ -131,9 +177,12 @@ type LogCleanupConfig struct {
 // LogEventContext carries structured QQ event metadata for database log entries.
 // All fields are optional; unset fields should be empty strings.
 type LogEventContext struct {
-	EventType string // QQ event type, e.g. "MESSAGE_CREATE"
-	ChannelID string // Source channel ID (empty for non-message events)
-	GuildID   string // Guild/server ID (empty for group/C2C)
-	GroupID   string // Group chat ID (empty for guild/C2C)
-	AuthorID  string // Message sender ID (empty for system events)
+	EventType  string // QQ event type, e.g. "MESSAGE_CREATE"
+	ChannelID  string // Source channel ID (empty for non-message events)
+	GuildID    string // Guild/server ID (empty for group/C2C)
+	GroupID    string // Group chat ID (empty for guild/C2C)
+	AuthorID   string // Message sender ID (empty for system events)
+	AuthorName string // Message sender username (empty for system events)
+	MemberRole string // Group member role: "owner", "admin", "member" (empty for non-group)
+	MessageID  string // QQ message ID (empty for non-message events)
 }

@@ -184,7 +184,10 @@ func (l *Logger) LogEvent(level, msg string, lc types.LogEventContext, keysAndVa
 		Str("channel_id", lc.ChannelID).
 		Str("guild_id", lc.GuildID).
 		Str("group_id", lc.GroupID).
-		Str("author_id", lc.AuthorID)
+		Str("author_id", lc.AuthorID).
+		Str("author_name", lc.AuthorName).
+		Str("member_role", lc.MemberRole).
+		Str("message_id", lc.MessageID)
 	addFields(event, keysAndValues)
 	event.Msg(msg)
 

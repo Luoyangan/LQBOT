@@ -33,7 +33,9 @@ func Register(r contract.CommandRegister) {
 				"pin <消息ID> | 将消息设为精华（仅频道）\n" +
 				"unpin <消息ID> | 取消精华消息（仅频道）\n" +
 				"md | 发送 Markdown 消息（自定义/模板/交互）\n" +
-				"mda | 发送 Markdown 代码消息\n",
+				"mda | 发送 Markdown 代码消息\n" +
+				"buttonstate | 演示按钮 3 种状态：Normal / Press / Loading\n" +
+				"deletes <消息ID> | 撤回消息（仅群主/管理员可用）",
 			)
 		},
 	})

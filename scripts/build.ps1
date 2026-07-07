@@ -13,9 +13,9 @@ $ROOT = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 # Git version injection
 $GIT_COMMIT = & { git rev-parse --short HEAD 2>$null }
 if (-not $GIT_COMMIT) { $GIT_COMMIT = "unknown" }
-$GIT_DATE = & { git log -1 --format=%cd --date=format:'%Y%m%d' 2>$null }
+$GIT_DATE = & { Get-Date -Format "yyyyMMdd" 2>$null }
 if (-not $GIT_DATE) { $GIT_DATE = "unknown" }
-$VERSION_PKG = "github.com/Luoyangan/lqbot/internal/version"
+$VERSION_PKG = "github.com/Luoyangan/LQBOT/internal/version"
 $LDFLAGS = "-s -w -X '$VERSION_PKG.Commit=$GIT_COMMIT' -X '$VERSION_PKG.Date=$GIT_DATE'"
 
 # Read default version from source

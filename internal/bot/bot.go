@@ -6,18 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Luoyangan/LQBOT/internal/adapter"
+	"github.com/Luoyangan/LQBOT/internal/admin"
 	"github.com/Luoyangan/LQBOT/internal/bus"
 	"github.com/Luoyangan/LQBOT/internal/config"
 	"github.com/Luoyangan/LQBOT/internal/contract"
 	"github.com/Luoyangan/LQBOT/internal/handler"
 	framelog "github.com/Luoyangan/LQBOT/internal/log"
+	"github.com/Luoyangan/LQBOT/internal/httpsrv"
 	"github.com/Luoyangan/LQBOT/internal/middleware"
+	"github.com/Luoyangan/LQBOT/internal/permission"
+	"github.com/Luoyangan/LQBOT/internal/scheduler"
 	"github.com/Luoyangan/LQBOT/internal/storage"
 	"github.com/Luoyangan/LQBOT/internal/types"
 	"github.com/Luoyangan/LQBOT/internal/utils"
@@ -54,6 +59,18 @@ type Bot struct {
 
 	// Rate limiter (for lifecycle management)
 	rateLimiter *middleware.RateLimitMiddleware
+
+	// Scheduler (cron/interval tasks) — nil if no tasks registered
+	scheduler *scheduler.Scheduler
+
+	// HTTP server (embedded) — nil if disabled
+	httpSrv *httpsrv.Server
+
+	// Admin panel — nil if disabled
+	adminPanel *admin.Admin
+
+	// Permission checker
+	permChecker *permission.Checker
 
 	// Lifecycle
 	ctx    context.Context
@@ -134,19 +151,52 @@ func New(cfg *types.Config) (*Bot, error) {
 		router:           router,
 		api:              api,
 		rateLimiter:      rl,
+		scheduler:        scheduler.New(),
+		permChecker:      permission.NewChecker(cfg.Permissions, logger),
 		ctx:              ctx,
 		cancel:           cancel,
 		logCleanupRunning: make(chan struct{}),
 	}
 
+	// Initialize embedded HTTP server if enabled
+	if cfg.HTTP.Enabled {
+		bot.httpSrv = httpsrv.New(cfg.HTTP.Port, cfg.HTTP.CertFile, cfg.HTTP.KeyFile, logger)
+		// Initialize admin panel if enabled
+		if cfg.HTTP.Admin {
+			bot.adminPanel = admin.New(store, logger, bot.httpSrv.ServeMux(), admin.VersionInfo{
+				App:     version.App,
+				Version: version.Version,
+				Commit:  version.Commit,
+				Date:    version.Date,
+			}, func() error {
+				// Restart: graceful shutdown then re-execute
+				bot.logger.Warn("restarting via admin panel")
+				go bot.Restart()
+				return nil
+			}, func() {
+				// Shutdown: graceful shutdown then exit
+				bot.logger.Warn("shutting down via admin panel")
+				bot.shutdown()
+				os.Exit(0)
+			})
+		}
+	}
+
 	// Register plugins (commands + event listeners)
 	bot.registerPlugins()
+
+	// Pass registered commands to admin panel
+	if bot.adminPanel != nil {
+		bot.adminPanel.SetCommands(bot.router.Commands())
+	}
 
 	return bot, nil
 }
 
 // registerPlugins imports and registers all plugin packages.
 // Each plugin's Register() is called with the narrow interfaces it needs.
+// Available narrow interfaces: CommandRegister, ListenerRegister, QQAPI,
+// Scheduler, HTTPServer (nil when disabled), and json.RawMessage for plugin config.
 func (b *Bot) registerPlugins() {
 	menu.Register(b.router)
 	ping.Register(b.router)
@@ -180,16 +230,36 @@ func (b *Bot) Run() error {
 	// 3. Initialize API client with OpenAPI
 	b.api.initOpenAPI()
 
-	// 4. Start log cleanup goroutine (if enabled)
+	// 4. Start scheduler (cron/interval tasks)
+	b.scheduler.Start()
+
+	// 5. Start embedded HTTP server if enabled
+	if b.httpSrv != nil {
+		if err := b.httpSrv.Start(); err != nil {
+			return fmt.Errorf("start http server: %w", err)
+		}
+	}
+
+	// 6. Start log cleanup goroutine (if enabled)
 	b.startLogCleanup()
 
-	// 5. Start event processing loop
+	// 7. Start event processing loop
 	b.wg.Add(1)
 	go b.eventLoop()
 
+	// 8. Update admin panel status
+	if b.adminPanel != nil {
+		b.adminPanel.SetBotStatus(admin.BotStatus{
+			Running:   true,
+			Adapter:   true,
+			Database:  true,
+			HTTPServe: b.httpSrv != nil,
+		})
+	}
+
 	b.logger.Info("LQBOT is running. Press Ctrl+C to stop.")
 
-	// 6. Wait for shutdown signal
+	// 9. Wait for shutdown signal
 	sig := utils.WaitForSignal()
 	b.logger.Info("received signal, shutting down", "signal", sig)
 
@@ -209,7 +279,7 @@ func (b *Bot) initAdapter() error {
 		b.adapter = ada
 
 	case types.AccessWebhook:
-		b.adapter = adapter.NewWebhookAdapter(b.cfg.Webhook.Port, b.cfg.Webhook.Path, b.logger)
+		b.adapter = adapter.NewWebhookAdapter(b.cfg.AppID, b.cfg.AppSecret, b.cfg.Webhook.Port, b.cfg.Webhook.Path, b.logger)
 
 	default:
 		return fmt.Errorf("unsupported access type: %s", b.cfg.AccessType)
@@ -254,23 +324,57 @@ func (b *Bot) processRawEvent(raw []byte) {
 	case types.EventInteractionCreate:
 		b.processInteractionEvent(evt.D)
 
+	// Message events — have content, author, message_id
 	case types.EventMessageCreate,
 		types.EventAtMessageCreate,
 		types.EventGroupAtMessageCreate,
 		types.EventGroupMessageCreate,
-		types.EventC2CMessageCreate:
+		types.EventC2CMessageCreate,
+		types.EventDirectMsgCreate:
 		b.processMessageEvent(evt.T, evt.D)
 
+	// Guild/system events — forward to event bus
 	case types.EventGuildCreate,
+		types.EventGuildUpdate,
 		types.EventGuildDelete,
+		types.EventChannelCreate,
+		types.EventChannelUpdate,
+		types.EventChannelDelete,
 		types.EventMemberJoin,
+		types.EventMemberUpdate,
 		types.EventMemberLeave,
-		types.EventMessageDelete:
-		// Forward to event bus
+		types.EventMessageDelete,
+		types.EventPublicMessageDel,
+		types.EventDirectMsgDelete,
+		types.EventReactionAdd,
+		types.EventReactionRemove,
+		types.EventFriendAdd,
+		types.EventFriendDel,
+		types.EventSubscribeMsgStatus,
+		types.EventEnterAIO,
+		types.EventAuditPass,
+		types.EventAuditReject,
+		types.EventForumThreadCreate,
+		types.EventForumThreadUpdate,
+		types.EventForumThreadDelete,
+		types.EventForumPostCreate,
+		types.EventForumPostDelete,
+		types.EventForumReplyCreate,
+		types.EventForumReplyDelete,
+		types.EventForumAuditResult,
+		types.EventAudioStart,
+		types.EventAudioFinish,
+		types.EventAudioOnMic,
+		types.EventAudioOffMic:
 		b.processGuildEvent(evt.T, evt.D)
 
 	default:
 		b.logger.Debug("unhandled event type", "type", evt.T)
+	}
+
+	// Push to admin SSE stream
+	if b.adminPanel != nil && evt.T != "" {
+		b.adminPanel.PublishEvent("event", evt.T)
 	}
 }
 
@@ -282,13 +386,19 @@ func (b *Bot) processMessageEvent(eventType string, rawData json.RawMessage) {
 		return
 	}
 
+	// Extract member role from raw JSON for logging and event context
+	memberRole := extractMemberRole(rawData)
+
 	// Structured log with event context
 	b.logger.LogEvent("info", "received message", types.LogEventContext{
-		EventType: eventType,
-		ChannelID: msg.ChannelID,
-		GuildID:   msg.GuildID,
-		GroupID:   msg.GroupID,
-		AuthorID:  msg.Author.ID,
+		EventType:  eventType,
+		ChannelID:  msg.ChannelID,
+		GuildID:    msg.GuildID,
+		GroupID:    msg.GroupID,
+		AuthorID:   msg.Author.ID,
+		AuthorName: msg.Author.Username,
+		MemberRole: memberRole,
+		MessageID:  msg.ID,
 	}, "content", msg.Content)
 
 	// Daily stats — route by scene
@@ -334,7 +444,7 @@ func (b *Bot) processMessageEvent(eventType string, rawData json.RawMessage) {
 		_ = b.storage.RecordChannel(msg.ChannelID, msg.GuildID)
 	}
 
-	eventCtx := newEventContext(eventType, &msg, b.api, b.adapter.BotUserID(), func(scene string) {
+	eventCtx := newEventContext(eventType, &msg, rawData, b.api, b.adapter.BotUserID(), func(scene string) {
 		switch scene {
 		case "c2c":
 			_ = b.storage.RecordC2COutgoing()
@@ -430,10 +540,29 @@ func (b *Bot) processInteractionEvent(rawData json.RawMessage) {
 	b.eventBus.Publish(b.ctx, types.EventInteractionCreate, ictx)
 }
 
-// executeCommand runs a matched command.
+// executeCommand runs a matched command with permission check.
 func (b *Bot) executeCommand(cmd *contract.Command, args []string, ctx contract.EventContext) error {
+	// Debug: log role info before permission check
+	b.logger.Debug("permission check",
+		"command", cmd.Name,
+		"user_role", ctx.Role(),
+		"author_id", ctx.AuthorID(),
+		"scene", ctx.Scene(),
+		"group_id", ctx.GroupID(),
+	)
+
+	// Permission check
+	if !b.permChecker.Check(cmd, ctx) {
+		return nil // silently denied
+	}
+
 	// Daily stats
 	_ = b.storage.RecordDailyCommand()
+
+	// Push to admin SSE
+	if b.adminPanel != nil {
+		b.adminPanel.PublishEvent("cmd", "/"+cmd.Name)
+	}
 
 	cmdCtx := &commandContextImpl{
 		args:         args,
@@ -509,23 +638,42 @@ func (b *Bot) shutdown() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// 1. Stop adapter
+	// 1. Stop scheduler
+	b.scheduler.Stop()
+
+	// 2. Stop HTTP server
+	if b.httpSrv != nil {
+		if err := b.httpSrv.Stop(shutdownCtx); err != nil {
+			b.logger.Error("HTTP server stop error", "error", err)
+		}
+	}
+
+	// 3. Stop adapter
 	if b.adapter != nil {
 		if err := b.adapter.Stop(shutdownCtx); err != nil {
 			b.logger.Error("adapter stop error", "error", err)
 		}
 	}
 
-	// 2. Cancel main context (stops event loop + log cleanup)
+	// 4. Cancel main context (stops event loop + log cleanup)
 	b.cancel()
 
-	// 3. Wait for goroutines to finish (event loop, cleanup, etc.)
-	b.wg.Wait()
+	// 5. Wait for goroutines to finish (event loop, cleanup, etc.) with timeout
+	doneCh := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		b.logger.Warn("shutdown: goroutines did not exit within 5s, continuing")
+	}
 
-	// 4. Close event bus
+	// 6. Close event bus
 	b.eventBus.Close()
 
-	// 5. Close storage
+	// 7. Close storage
 	if b.storage != nil {
 		if err := b.storage.Close(); err != nil {
 			b.logger.Error("storage close error", "error", err)
@@ -540,21 +688,49 @@ func (b *Bot) shutdown() {
 	b.logger.Info("shutdown complete")
 }
 
+// Restart performs a graceful shutdown then re-executes the current binary.
+func (b *Bot) Restart() {
+	b.shutdown()
+
+	// Re-execute the current binary (replaces this process)
+	exe, err := os.Executable()
+	if err != nil {
+		b.logger.Error("restart: get executable", "error", err)
+		return
+	}
+
+	b.logger.Info("restart: re-executing", "exe", exe)
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		b.logger.Error("restart: start process", "error", err)
+		return
+	}
+
+	// Parent process exits immediately after child starts
+	b.logger.Info("restart: child process started, exiting parent")
+	os.Exit(0)
+}
+
 // ---
 // EventContext implementation — aligned with QQ Official API v2 dto.Message fields
 // ---
 
 type eventContextImpl struct {
-	msg         *dto.Message
-	api         contract.QQAPI
-	content     string
-	rawContent  string
-	isMentioned bool
-	scene       contract.MessageScene
+	msg            *dto.Message
+	api            contract.QQAPI
+	content        string
+	rawContent     string
+	isMentioned    bool
+	scene          contract.MessageScene
+	role           string
 	recordOutgoing func(scene string) // records outgoing message in daily stats
 }
 
-func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, botID string, recordOutgoing func(scene string)) *eventContextImpl {
+func newEventContext(eventType string, msg *dto.Message, rawData json.RawMessage, api contract.QQAPI, botID string, recordOutgoing func(scene string)) *eventContextImpl {
 	// Extract mentioned user IDs
 	var mentionIDs []string
 	for _, m := range msg.Mentions {
@@ -566,6 +742,9 @@ func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, bot
 
 	content, isMentioned := handler.IsMentioned(msg.Content, botID, mentionIDs)
 
+	// Extract member_role from raw JSON (dto.User doesn't include this field)
+	memberRole := extractMemberRole(rawData)
+
 	return &eventContextImpl{
 		msg:            msg,
 		api:            api,
@@ -573,6 +752,7 @@ func newEventContext(eventType string, msg *dto.Message, api contract.QQAPI, bot
 		rawContent:     msg.Content,
 		isMentioned:    isMentioned || scene == contract.SceneC2C,
 		scene:          scene,
+		role:           memberRole,
 		recordOutgoing: recordOutgoing,
 	}
 }
@@ -598,6 +778,7 @@ func (c *eventContextImpl) Content() string              { return c.content }
 func (c *eventContextImpl) RawContent() string           { return c.rawContent }
 func (c *eventContextImpl) ChannelID() string            { return c.msg.ChannelID }
 func (c *eventContextImpl) AuthorID() string             { return c.msg.Author.ID }
+func (c *eventContextImpl) Role() string                 { return c.role }
 func (c *eventContextImpl) MessageID() string            { return c.msg.ID }
 func (c *eventContextImpl) IsMentioned() bool            { return c.isMentioned }
 func (c *eventContextImpl) Scene() contract.MessageScene { return c.scene }
@@ -830,6 +1011,7 @@ func (g *guildEventContext) Content() string                    { return "" }
 func (g *guildEventContext) RawContent() string                 { return "" }
 func (g *guildEventContext) ChannelID() string                  { return "" }
 func (g *guildEventContext) AuthorID() string                   { return "" }
+func (g *guildEventContext) Role() string                       { return "" }
 func (g *guildEventContext) MessageID() string                  { return "" }
 func (g *guildEventContext) IsMentioned() bool                  { return false }
 func (g *guildEventContext) GuildID() string                    { return "" }
@@ -1010,6 +1192,7 @@ func (c *interactionContextImpl) DeferReply() error {
 func (c *interactionContextImpl) Content() string                    { return "" }
 func (c *interactionContextImpl) RawContent() string                 { return "" }
 func (c *interactionContextImpl) AuthorID() string                   { return c.data.UserID }
+func (c *interactionContextImpl) Role() string                       { return "" }
 func (c *interactionContextImpl) IsMentioned() bool                  { return false }
 func (c *interactionContextImpl) GuildID() string                    { return c.data.GuildID }
 func (c *interactionContextImpl) GroupID() string                    { return "" }
@@ -1228,11 +1411,15 @@ func buildBotgoButton(btn *contract.MessageButton) *keyboard.Button {
 		Enter:      btn.Enter,
 	}
 
+	visitedLabel := btn.Label
+	if btn.VisitedLabel != "" {
+		visitedLabel = btn.VisitedLabel
+	}
 	return &keyboard.Button{
 		ID: btn.ID,
 		RenderData: &keyboard.RenderData{
 			Label:        btn.Label,
-			VisitedLabel: btn.Label,
+			VisitedLabel: visitedLabel,
 			Style:        btn.Style,
 		},
 		Action: action,
@@ -1325,11 +1512,15 @@ func buildFullButton(btn *contract.MessageButton) *fullButton {
 		perm.SpecifyRoleIDs = btn.SpecifyRoleIDs
 	}
 
+	visitedLabel := btn.Label
+	if btn.VisitedLabel != "" {
+		visitedLabel = btn.VisitedLabel
+	}
 	return &fullButton{
 		ID: btn.ID,
 		RenderData: &renderData{
 			Label:        btn.Label,
-			VisitedLabel: btn.Label,
+			VisitedLabel: visitedLabel,
 			Style:        btn.Style,
 		},
 		Action: &fullAction{
@@ -2032,6 +2223,22 @@ func (l *botgoLogger) Sync() error { return nil }
 // ---
 // Helpers
 // ---
+
+// extractMemberRole extracts the member_role from raw message JSON.
+// The botgo dto.User struct doesn't include MemberRole, so we need to
+// extract it manually from the raw JSON's d.author.member_role field.
+// Returns "owner", "admin", "member", or empty string if not found.
+func extractMemberRole(rawData json.RawMessage) string {
+	var data struct {
+		Author struct {
+			MemberRole string `json:"member_role"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(rawData, &data); err != nil {
+		return ""
+	}
+	return data.Author.MemberRole
+}
 
 func ensureDirs(dirs ...string) {
 	for _, d := range dirs {

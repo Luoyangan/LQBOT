@@ -32,15 +32,22 @@ func Init(path string) string {
 	// No config at all — create a minimal one
 	log.Printf("[config] no config files found, creating minimal %s", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
-		minimal := `# LQBOT 配置文件
+		minimal := `# LQBOT 配置文件示例
 app_id: "your_app_id_here"       # QQ 开放平台申请的 AppID
 app_secret: "your_app_secret_here" # QQ 开放平台申请的 AppSecret
 sandbox: false                    # true = 沙箱模式, false = 生产模式
 intents:
-  - AT_MESSAGES                  # @机器人消息
-  #- GUILD_MESSAGES               # 频道全部消息
-  - GROUP_AND_C2C_EVENT          # 群聊和私聊
+  # 注意: 公域机器人仅支持 AT_MESSAGES + GROUP_AND_C2C_EVENT + INTERACTION + MESSAGE_AUDIT
+  #       私域机器人可额外使用 GUILDS/GUILD_MEMBERS/GUILD_MESSAGES 等
+  - AT_MESSAGES                  # 频道 @机器人消息（公/私域）
+  #- GUILD_MESSAGES               # 频道全部消息（仅私域）
+  - GROUP_AND_C2C_EVENT          # 群聊和私聊（需申请权限）
   - INTERACTION                  # 按钮/选择框交互事件
+  #- GUILD_MESSAGE_REACTIONS     # 消息表情表态事件（仅私域）
+  #- DIRECT_MESSAGE              # 频道私信事件（仅私域）
+  #- FORUMS_EVENT                # 论坛/帖子事件（仅私域）
+  #- AUDIO_ACTION                # 音频事件（仅私域）
+  #- MESSAGE_AUDIT               # 消息审核事件（公/私域）
 access_type: websocket           # websocket | webhook
 log_level: info                  # 控制台日志级别: trace/debug/info/warn/error
 log_level_db: info               # 数据库日志级别: trace/debug/info/warn/error（空=不写入DB）
@@ -57,7 +64,25 @@ storage:                         # 数据库配置
   log_cleanup:                   # 日志清理配置
     enabled: true                # 是否启用日志清理
     interval: "24h"              # 清理周期（time.Duration 格式）
-    retain_days: 7              # 保留多少天的日志
+    retain_days: 7               # 保留多少天的日志
+
+http:                            # 内嵌 HTTP 服务配置（可选）
+  enabled: false                 # true = 启用内嵌 HTTP 服务
+  port: 80                       # HTTP 监听端口（默认 80）
+  admin: true                    # true = 启用网页管理界面
+  #cert_file: "ssl/cert.pem"     # SSL 证书文件路径（设置后启用 HTTPS）
+  #key_file: "ssl/key.pem"       # SSL 私钥文件路径
+
+# 指令权限映射（可选）
+# 可用级别: owner（群主）, admin（管理员）, member（群成员）, public（所有人）
+# 不在列表中的指令默认 public（无限制）
+permissions:
+  # delete: "admin"             # /delete 指令仅管理员可用
+
+# 插件独立配置（可选，由各插件自行定义和解析）
+# plugins:
+#   hello:
+#     welcome_message: "欢迎使用 LQBOT"
 `
 		_ = os.WriteFile(path, []byte(minimal), 0644)
 	}
@@ -107,6 +132,10 @@ func applyDefaults(cfg *types.Config) {
 	}
 	if cfg.Storage.LogCleanup.RetainDays == 0 {
 		cfg.Storage.LogCleanup.RetainDays = 7
+	}
+	// HTTP server defaults
+	if cfg.HTTP.Port == 0 {
+		cfg.HTTP.Port = 80
 	}
 }
 

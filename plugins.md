@@ -44,6 +44,15 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister)
 
 // 指令 + 事件 + QQ API
 func Register(r contract.CommandRegister, l contract.ListenerRegister, api contract.QQAPI)
+
+// 指令 + 定时任务
+func Register(r contract.CommandRegister, s contract.Scheduler)
+
+// 指令 + HTTP 路由
+func Register(r contract.CommandRegister, h contract.HTTPServer)
+
+// 多接口组合
+func Register(r contract.CommandRegister, l contract.ListenerRegister, s contract.Scheduler, h contract.HTTPServer)
 ```
 
 ### 可用窄接口
@@ -52,6 +61,8 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 |------|------|------|
 | `contract.CommandRegister` | `Register(cmd Command)` | 注册一个指令 |
 | `contract.ListenerRegister` | `Subscribe(listener Listener)` | 注册事件监听器 |
+| `contract.Scheduler` | `Every(cronExpr, fn)` / `Interval(d, fn)` | 注册定时任务 |
+| `contract.HTTPServer` | `Handle(path, handler)` / `ServeMux()` | 注册 HTTP 路由 |
 | `contract.QQAPI` | SendMessage / SendMarkdown / ReplyMarkdown / ReplyImage / SendImage / SendEmbedMessage / SendArkMessage / SendRichMedia / SendMessageWithButtons / SendGroupMessage / SendGroupMarkdown / SendGroupRichMedia / SendGroupMessageWithButtons / SendC2CMessage / SendC2CMarkdown / SendC2CRichMedia / SendC2CMessageWithButtons / DeleteMessage / DeleteGroupMessage / DeleteC2CMessage / PinMessage / UnpinMessage / CreateReaction / DeleteReaction / PutInteraction / ReplyInteraction / SendActiveC2CMessage / GetGuild / GetChannel / GetGuildMember / UploadChannelMedia | 调用 QQ API |
 
 > 不需要的参数不要在 `Register()` 中声明，框架不会传入 nil。
@@ -105,16 +116,49 @@ contract.Listener{
 }
 ```
 
-### 常用事件类型
+### 完整事件类型
 
-| 常量 | QQ 原生 | 触发时机 |
-|------|---------|---------|
-| `types.EventMessageCreate` | `MESSAGE_CREATE` | 频道普通消息 |
-| `types.EventAtMessageCreate` | `AT_MESSAGE_CREATE` | 频道 @机器人 消息 |
-| `types.EventGroupAtMessageCreate` | `GROUP_AT_MESSAGE_CREATE` | 群聊 @机器人 消息 |
-| `types.EventGroupMessageCreate` | `GROUP_MESSAGE_CREATE` | 群聊消息（含 @ 和不含 @） |
-| `types.EventC2CMessageCreate` | `C2C_MESSAGE_CREATE` | 私聊消息 |
-| `types.EventInteractionCreate` | `INTERACTION_CREATE` | 按钮/选择框交互 |
+| Intent | 常量 | QQ 原生 | 触发时机 |
+|--------|------|---------|---------|
+| **GUILDS** | `types.EventGuildCreate` | `GUILD_CREATE` | 机器人被加入频道 |
+| | `types.EventGuildUpdate` | `GUILD_UPDATE` | 频道信息更新 |
+| | `types.EventGuildDelete` | `GUILD_DELETE` | 机器人被移出频道 |
+| | `types.EventChannelCreate` | `CHANNEL_CREATE` | 子频道创建 |
+| | `types.EventChannelUpdate` | `CHANNEL_UPDATE` | 子频道更新 |
+| | `types.EventChannelDelete` | `CHANNEL_DELETE` | 子频道删除 |
+| **GUILD_MEMBERS** | `types.EventMemberJoin` | `GUILD_MEMBER_ADD` | 新成员加入频道 |
+| | `types.EventMemberUpdate` | `GUILD_MEMBER_UPDATE` | 频道成员信息更新 |
+| | `types.EventMemberLeave` | `GUILD_MEMBER_REMOVE` | 成员离开频道 |
+| **GUILD_MESSAGES** | `types.EventMessageCreate` | `MESSAGE_CREATE` | 频道普通消息 |
+| | `types.EventMessageDelete` | `MESSAGE_DELETE` | 频道消息被撤回 |
+| **GUILD_MESSAGE_REACTIONS** | `types.EventReactionAdd` | `MESSAGE_REACTION_ADD` | 消息表情表态添加 |
+| | `types.EventReactionRemove` | `MESSAGE_REACTION_REMOVE` | 消息表情表态移除 |
+| **AT_MESSAGES** | `types.EventAtMessageCreate` | `AT_MESSAGE_CREATE` | 频道 @机器人 消息 |
+| | `types.EventPublicMessageDel` | `PUBLIC_MESSAGE_DELETE` | 频道 @机器人 消息被撤回 |
+| **DIRECT_MESSAGE** | `types.EventDirectMsgCreate` | `DIRECT_MESSAGE_CREATE` | 频道私信消息 |
+| | `types.EventDirectMsgDelete` | `DIRECT_MESSAGE_DELETE` | 频道私信被撤回 |
+| **GROUP_AND_C2C_EVENT** | `types.EventGroupAtMessageCreate` | `GROUP_AT_MESSAGE_CREATE` | 群聊 @机器人 消息 |
+| | `types.EventGroupMessageCreate` | `GROUP_MESSAGE_CREATE` | 群聊消息（含 @和不含 @） |
+| | `types.EventC2CMessageCreate` | `C2C_MESSAGE_CREATE` | 私聊消息 |
+| | `types.EventFriendAdd` | `FRIEND_ADD` | 机器人被添加好友 |
+| | `types.EventFriendDel` | `FRIEND_DEL` | 机器人被删除好友 |
+| | `types.EventSubscribeMsgStatus` | `SUBSCRIBE_MESSAGE_STATUS` | 订阅状态变更 |
+| | `types.EventEnterAIO` | `ENTER_AIO` | 进入机器人聊天页 |
+| **INTERACTION** | `types.EventInteractionCreate` | `INTERACTION_CREATE` | 按钮/选择框交互 |
+| **MESSAGE_AUDIT** | `types.EventAuditPass` | `MESSAGE_AUDIT_PASS` | 消息审核通过 |
+| | `types.EventAuditReject` | `MESSAGE_AUDIT_REJECT` | 消息审核不通过 |
+| **FORUMS_EVENT** | `types.EventForumThreadCreate` | `FORUM_THREAD_CREATE` | 论坛帖子创建 |
+| | `types.EventForumThreadUpdate` | `FORUM_THREAD_UPDATE` | 论坛帖子更新 |
+| | `types.EventForumThreadDelete` | `FORUM_THREAD_DELETE` | 论坛帖子删除 |
+| | `types.EventForumPostCreate` | `FORUM_POST_CREATE` | 论坛评论创建 |
+| | `types.EventForumPostDelete` | `FORUM_POST_DELETE` | 论坛评论删除 |
+| | `types.EventForumReplyCreate` | `FORUM_REPLY_CREATE` | 论坛回复创建 |
+| | `types.EventForumReplyDelete` | `FORUM_REPLY_DELETE` | 论坛回复删除 |
+| | `types.EventForumAuditResult` | `FORUM_PUBLISH_AUDIT_RESULT` | 论坛发布审核结果 |
+| **AUDIO_ACTION** | `types.EventAudioStart` | `AUDIO_START` | 音频开始 |
+| | `types.EventAudioFinish` | `AUDIO_FINISH` | 音频结束 |
+| | `types.EventAudioOnMic` | `AUDIO_ON_MIC` | 用户上麦 |
+| | `types.EventAudioOffMic` | `AUDIO_OFF_MIC` | 用户下麦 |
 
 ### EventContext 接口
 
@@ -124,6 +168,7 @@ type EventContext interface {
     RawContent() string        // 原始消息内容
     ChannelID() string         // 频道/子频道 ID（群聊场景为空）
     AuthorID() string          // 发送者 ID
+    Role() string              // 群聊角色："owner"/"admin"/"member"（非群聊为空）
     MessageID() string         // 消息 ID
     IsMentioned() bool         // 是否被 @
     GuildID() string           // 频道 ID（群聊/私聊为空）
@@ -140,6 +185,204 @@ type EventContext interface {
     ReplyMarkdownTemplate(templateID string, params []MarkdownParam) error // 模板 Markdown 被动回复
 }
 ```
+
+## 定时任务
+
+插件可通过 `contract.Scheduler` 窄接口注册定时任务，支持 cron 表达式和固定间隔两种方式。
+
+### 注册方式
+
+```go
+func Register(r contract.CommandRegister, s contract.Scheduler) {
+    // 每天 8:00 执行
+    _ = s.Every("0 8 * * *", func() {
+        // 定时任务逻辑
+    })
+    // 每 30 分钟执行
+    _ = s.Interval(30*time.Minute, func() {
+        // 间隔任务逻辑
+    })
+}
+```
+
+### 注意事项
+
+- Cron 格式：`秒 分 时 日 月 周`（如 `"0 0 8 * * *"` = 每天8点，`"0 */30 * * * *"` = 每30分钟）
+- 所有定时任务在 `Bot.Run()` 启动时统一开始调度
+- 优雅关闭时等待运行中的任务完成后再退出
+- 调度器默认启用，无需额外配置
+
+## HTTP 路由
+
+框架提供可选的嵌入式 HTTP 服务器。启用后插件可通过 `contract.HTTPServer` 窄接口注册路由。
+
+### 配置
+
+```yaml
+# config.yaml
+http:
+  enabled: true   # 启用
+  port: 80        # 监听端口
+  admin: true     # 启用 Web 管理面板（详见 CLAUDE.md Web 管理面板章节）
+  cert_file: "cert.pem"  # SSL 证书（自动从 ssl/ 目录加载，不存在时自动生成自签名证书）
+  key_file: "key.pem"    # SSL 私钥
+```
+
+### 插件中使用
+
+```go
+func Register(r contract.CommandRegister, h contract.HTTPServer) {
+    h.Handle("/webhook/mybot", func(w http.ResponseWriter, r *http.Request) {
+        // 处理 HTTP 请求
+        w.Write([]byte(`{"status":"ok"}`))
+    })
+}
+```
+
+### 内置端点
+
+- `GET /health` — 健康检查，返回 `{"status":"ok"}`
+- Web 管理面板（配置 `admin: true` 时启用，详见 CLAUDE.md）
+
+## 权限控制
+
+框架提供两层权限控制：
+- **框架层**：基于 `config.yaml` 的 `permissions` 映射，在指令执行前自动检查
+- **Handler 层**：在指令 handler 内自行编写检查逻辑，灵活性更高
+
+### 框架层：配置权限映射
+
+```yaml
+# config.yaml
+permissions:
+  delete: "admin"   # /delete 仅管理员可用
+  at: "owner"       # /at 仅群主可用
+```
+
+### 框架层：在指令中设置默认权限
+
+```go
+r.Register(contract.Command{
+    Name:       "admin-cmd",
+    Permission: "admin",  // 默认要求管理员权限（配置中同名指令可覆盖）
+    Handler: func(ctx contract.CommandContext) error {
+        return ctx.Reply("仅管理员可执行")
+    },
+})
+```
+
+### 框架层：角色级别
+
+| 级别 | 值 | 说明 |
+|------|-----|------|
+| 群主 | `owner` | 仅群主 |
+| 管理员 | `admin` | 群主 + 管理员 |
+| 群成员 | `member` | 所有群成员 |
+| 公开 | `public` | 所有人（包括非群聊场景） |
+
+### 框架层角色获取
+
+```go
+func handler(ctx contract.CommandContext) error {
+    role := ctx.Role()  // "owner" / "admin" / "member" / ""
+    return ctx.Reply("你的角色: " + role)
+}
+```
+
+> 非群聊场景（频道/C2C）`Role()` 返回空字符串，此时仅 `public` 级别的指令可执行。
+
+### Handler 层：自定义权限检查
+
+框架层只支持按角色级别判断。如果需要对**用户、群、场景组合**做更细粒度的控制，直接在 handler 中用 `ctx` 提供的方法写检查逻辑。
+
+`CommandContext` / `EventContext` 提供以下方法用于权限判断：
+
+| 方法 | 返回 | 用途 |
+|------|------|------|
+| `ctx.Scene()` | `SceneGroup` / `SceneC2C` / `SceneGuild` | 判断消息来源场景 |
+| `ctx.Role()` | `"owner"` / `"admin"` / `"member"` / `""` | 用户在群聊中的角色 |
+| `ctx.AuthorID()` | string | 消息发送者 OpenID |
+| `ctx.GroupID()` | string | 群聊 ID（群聊场景） |
+| `ctx.GuildID()` | string | 频道 ID（频道场景） |
+| `ctx.ChannelID()` | string | 子频道 ID |
+
+**常见权限控制模式**：
+
+```go
+r.Register(contract.Command{
+    Name: "deletes",
+    Handler: func(ctx contract.CommandContext) error {
+        // ── 场景限制：仅允许群聊使用 ──
+        if ctx.Scene() != contract.SceneGroup {
+            return ctx.Reply("该命令仅支持群聊使用。")
+        }
+
+        // ── 角色限制：仅群主/管理员 ──
+        role := ctx.Role()
+        if role != "owner" && role != "admin" {
+            return ctx.Reply("仅群主和管理员可使用此命令。")
+        }
+
+        // ── 黑名单：禁止指定用户 ──
+        deniedUsers := map[string]bool{
+            "USER_OPEN_ID_1": true,
+        }
+        if deniedUsers[ctx.AuthorID()] {
+            return ctx.Reply("你已被禁止使用此命令。")
+        }
+
+        // ── 白名单：仅允许特定群使用 ──
+        allowedGroups := map[string]bool{
+            "GROUP_OPEN_ID_A": true,
+        }
+        if !allowedGroups[ctx.GroupID()] {
+            return ctx.Reply("该群未授权使用此命令。")
+        }
+
+        // ── 禁止群主使用（高级功能限制） ──
+        if ctx.Role() == "owner" {
+            return ctx.Reply("群主不可使用此命令。")
+        }
+
+        // 通过检查，执行命令逻辑
+        // ...
+    },
+})
+```
+
+> **提示**：框架层（`permissions` 配置）和 Handler 层可叠加使用。框架层做第一道关卡，Handler 层做第二道精细控制。
+
+## 插件配置
+
+每个插件可在 `config.yaml` 中拥有独立的配置段，使用 `Plugin` 接口的 `Init` 方法获取。
+
+### 配置格式
+
+```yaml
+# config.yaml
+plugins:
+  myplugin:
+    api_key: "xxx"
+    enable_feature: true
+```
+
+### 插件中读取
+
+```go
+type MyPlugin struct{}
+
+func (p *MyPlugin) Name() string { return "myplugin" }
+
+func (p *MyPlugin) Init(pc *contract.PluginContext) error {
+    cfg := pc.PluginConfig
+    apiKey, _ := cfg["api_key"].(string)
+    enabled, _ := cfg["enable_feature"].(bool)
+    pc.Logger.Info("config loaded", "api_key", apiKey, "enabled", enabled)
+    return nil
+}
+```
+
+> 传统 `Register()` 方式不接收插件配置。使用 `Plugin` 接口需要在 `registerPlugins()` 中调用 `bot.RegisterPlugin()`。
 
 ## 使用 QQ API
 
@@ -940,6 +1183,7 @@ func Register(r contract.CommandRegister) {
 - `/button2` → 3 个回调按钮（你好/Ping/信息）
 - `/buttons` → 多行按钮布局（1行1个、2行2个、3行3个、跳转按钮行）
 - `/buttonaction` → 演示跳转 URL / 指令 Enter / 回调 / 权限控制四种按钮
+- `/buttonstate` → 演示按钮 3 种视觉状态（Normal / Press / Loading）
 - `/at <消息>` → 在 Markdown 中 @ 提及发送者（使用 `ctx.ReplyMarkdown` 被动回复）
 - `/textchain` → 按场景演示文本链元素
 
@@ -950,6 +1194,7 @@ package hello
 
 import (
 	"strings"
+	"time"
 
 	"github.com/Luoyangan/LQBOT/internal/contract"
 	"github.com/Luoyangan/LQBOT/internal/types"
@@ -1104,6 +1349,49 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 		},
 	})
 
+	// ── 命令：/buttonstate 演示按钮 3 种视觉状态 ──
+	// Normal → Label（默认文字）
+	// Press  → VisitedLabel（点击后文字，为空时退回到 Label）
+	// Loading → 客户端自动展示，需通过 DeferReply() 响应解除
+	r.Register(contract.Command{
+		Name:        "buttonstate",
+		Description: "演示按钮 3 种状态：Normal / Press / Loading",
+		Usage:       "buttonstate",
+		Handler: func(ctx contract.CommandContext) error {
+			isC2C := ctx.Scene() == contract.SceneC2C
+			rows := [][]contract.MessageButton{
+				// 第 1 行：仅 Normal 态（不设 VisitedLabel，按压后文字不变）
+				{
+					{ID: "btn_normal", Label: "普通按钮", Style: 0,
+						Data: "click_normal", ActionType: 1},
+				},
+				// 第 2 行：Normal + Press 文字不同（设 VisitedLabel）
+				{
+					{ID: "btn_press", Label: "点赞", VisitedLabel: "已点赞 ✓", Style: 1,
+						Data: "click_press", ActionType: 1,
+						UnsupportTips: "请升级客户端体验按压态效果"},
+				},
+				// 第 3 行：Loading 演示 — 回调延 3 秒响应，客户端保持 loading 动画
+				{
+					{ID: "btn_loading", Label: "耗时操作", VisitedLabel: "处理中…", Style: 0,
+						Data: "click_loading", ActionType: 1,
+						UnsupportTips: "请升级客户端"},
+				},
+				// 第 4 行：指令按钮 + VisitedLabel
+				{
+					{ID: "btn_cmd", Label: "发 Ping", VisitedLabel: "已发送", Style: 4,
+						Data: "/ping", ActionType: 2,
+						Enter: isC2C, UnsupportTips: "请升级客户端"},
+				},
+			}
+			contract.StoreButtonMsgID(ctx.GroupID(), ctx.MessageID())
+			return ctx.ReplyWithButtonRows(
+				"按钮 3 种状态演示：\n🟦 Normal  → 默认文字\n🟩 Press    → 点击后变文字\n⏳ Loading → 点击后等待处理",
+				rows,
+			)
+		},
+	})
+
 	// ── 按钮交互回调 ──
 	l.Subscribe(contract.Listener{
 		Event: types.EventInteractionCreate,
@@ -1117,6 +1405,10 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 				return ic.Reply("Pong! 机器人运行正常 ✓")
 			case "btn_info":
 				return ic.Reply("LQBOT - 基于 Go 的 QQ 机器人\n技术栈: Go + botgo SDK + SQLite\n支持: 文本 / Markdown / Ark / 按钮交互")
+			case "btn_loading":
+				// 模拟耗时操作演示 Loading 状态
+				time.Sleep(3 * time.Second)
+				return ic.Reply("处理完成！你体验到了 Loading 状态 👆")
 			default:
 				return ic.Reply("按钮已点击 (ID: " + ic.ButtonID() + ")")
 			}
@@ -1173,6 +1465,7 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 - 事件监听器：三场景分别订阅（`MESSAGE_CREATE` / `GROUP_MESSAGE_CREATE` / `C2C_MESSAGE_CREATE`）
 - 多行按钮（`ReplyWithButtonRows`）支持不同行数布局
 - 三种 ActionType（跳转 URL / 回调 / 指令 Enter）完整演示
+- 按钮 3 种视觉状态：Normal（`Label`）/ Press（`VisitedLabel`）/ Loading（`DeferReply` 延迟响应演示）
 - Permission 权限控制（管理员权限按钮）
 - 按钮交互处理：`DeferReply()` + `Reply()` 发送全群可见消息
 - `StoreButtonMsgID` 存储 msg_id 供被动回复
@@ -1221,13 +1514,43 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 ### manage — 消息管理
 
 `/delete <消息ID>` → 撤回消息（三场景均支持）
+`/deletes <消息ID>` → 撤回消息（仅群聊，群主/管理员可用）
 `/react <表情ID>` → 给消息添加表情反应（仅频道）
 `/pin <消息ID>` → 设置精华消息（仅频道）
 `/unpin <消息ID>` → 取消精华消息（仅频道）
 
 - 依赖 `CommandRegister` + `QQAPI`
-- 演示：`DeleteMessage`（三场景路由）、`CreateReaction`、`PinMessage`、`UnpinMessage`
+- 演示：`DeleteMessage`（三场景路由）、`DeleteGroupMessage`、`CreateReaction`、`PinMessage`、`UnpinMessage`
 - 表情格式：`1:4`（系统表情）或 `2:❤️`（Unicode 表情）
+- `/deletes` 演示 Handler 层自定义权限检查：限制群聊场景 + 仅群主/管理员
+
+```go
+// /deletes — 演示自定义权限检查
+r.Register(contract.Command{
+    Name:        "deletes",
+    Description: "撤回消息（仅群主/管理员可用）",
+    Usage:       "deletes <消息ID>",
+    Handler: func(ctx contract.CommandContext) error {
+        // 权限检查：仅群聊场景，且仅群主/管理员可用
+        if ctx.Scene() != contract.SceneGroup {
+            return ctx.Reply("该命令仅支持群聊使用。")
+        }
+        role := ctx.Role()
+        if role != "owner" && role != "admin" {
+            return ctx.Reply("仅群主和管理员可使用此命令。")
+        }
+
+        if ctx.ArgCount() == 0 {
+            return ctx.Reply("用法: /deletes <消息ID>")
+        }
+        msgID := ctx.Arg(0)
+        if err := api.DeleteGroupMessage(ctx.GroupID(), msgID); err != nil {
+            return ctx.Reply("撤回失败: " + err.Error())
+        }
+        return ctx.Reply("消息已撤回。")
+    },
+})
+```
 
 ### markdown — Markdown 消息
 
@@ -1399,6 +1722,7 @@ count, _    := store.CountChannels()
 | `guild_id` | VARCHAR(128) INDEX | 频道服务器 ID |
 | `group_id` | VARCHAR(128) INDEX | 群聊 ID |
 | `author_id` | VARCHAR(128) INDEX | 消息发送者 ID |
+| `author_name` | VARCHAR(256) | 消息发送者用户名 |
 | `created_at` | DATETIME INDEX | 日志时间 |
 
 ```go
@@ -1489,4 +1813,4 @@ storage:
 - 禁止使用 `init()` 注册，所有注册通过显式 `Register()` 调用
 - 新增插件三步：① 创建包 ② 实现 Register() ③ 在 bot.go 的 registerPlugins() 中添加
 
-更新时间：2026-07-06
+更新时间：2026-07-07

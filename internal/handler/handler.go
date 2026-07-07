@@ -30,6 +30,15 @@ func (r *CommandRouter) Register(cmd contract.Command) {
 	}
 }
 
+// Commands returns all registered commands.
+func (r *CommandRouter) Commands() []contract.Command {
+	var result []contract.Command
+	for _, cmd := range r.commands {
+		result = append(result, cmd)
+	}
+	return result
+}
+
 // Unregister removes a command by name.
 func (r *CommandRouter) Unregister(name string) {
 	cmd, ok := r.commands[name]

@@ -11,17 +11,20 @@ import (
 
 // LogEntry represents a log record stored in the database.
 type LogEntry struct {
-	ID        uint      `gorm:"primaryKey;autoIncrement"`
-	Level     string    `gorm:"size:16;index;not null"`
-	Message   string    `gorm:"type:text;not null"`
-	Fields    string    `gorm:"type:text"`          // JSON-encoded key-value pairs
-	Source    string    `gorm:"size:128;index"`     // Source module/component
-	EventType string    `gorm:"size:64;index"`      // QQ event type, e.g. "MESSAGE_CREATE" (optional)
-	ChannelID string    `gorm:"size:128;index"`     // Source channel ID (optional)
-	GuildID   string    `gorm:"size:128;index"`     // Guild/server ID (optional)
-	GroupID   string    `gorm:"size:128;index"`     // Group chat ID (optional)
-	AuthorID  string    `gorm:"size:128;index"`     // Message sender ID (optional)
-	CreatedAt time.Time `gorm:"index;not null"`
+	ID         uint      `gorm:"primaryKey;autoIncrement"`
+	Level      string    `gorm:"size:16;index;not null"`
+	Message    string    `gorm:"type:text;not null"`
+	Fields     string    `gorm:"type:text"`          // JSON-encoded key-value pairs
+	Source     string    `gorm:"size:128;index"`     // Source module/component
+	EventType  string    `gorm:"size:64;index"`      // QQ event type, e.g. "MESSAGE_CREATE" (optional)
+	ChannelID  string    `gorm:"size:128;index"`     // Source channel ID (optional)
+	GuildID    string    `gorm:"size:128;index"`     // Guild/server ID (optional)
+	GroupID    string    `gorm:"size:128;index"`     // Group chat ID (optional)
+	AuthorID   string    `gorm:"size:128;index"`     // Message sender ID (optional)
+	AuthorName string    `gorm:"size:256"`           // Message sender username (optional)
+	MemberRole string    `gorm:"size:32"`            // Group member role: owner/admin/member (optional)
+	MessageID  string    `gorm:"size:128"`           // QQ message ID (optional)
+	CreatedAt  time.Time `gorm:"index;not null"`
 }
 
 // SaveLog writes a log entry to the database.
@@ -53,16 +56,19 @@ func (s *Storage) saveLog(level, message string, fields map[string]interface{}, 
 	}
 
 	entry := LogEntry{
-		Level:     level,
-		Message:   message,
-		Fields:    fieldsJSON,
-		Source:    source,
-		EventType: lc.EventType,
-		ChannelID: lc.ChannelID,
-		GuildID:   lc.GuildID,
-		GroupID:   lc.GroupID,
-		AuthorID:  lc.AuthorID,
-		CreatedAt: time.Now(),
+		Level:      level,
+		Message:    message,
+		Fields:     fieldsJSON,
+		Source:     source,
+		EventType:  lc.EventType,
+		ChannelID:  lc.ChannelID,
+		GuildID:    lc.GuildID,
+		GroupID:    lc.GroupID,
+		AuthorID:   lc.AuthorID,
+		AuthorName: lc.AuthorName,
+		MemberRole: lc.MemberRole,
+		MessageID:  lc.MessageID,
+		CreatedAt:  time.Now(),
 	}
 
 	if err := s.db.Create(&entry).Error; err != nil {
@@ -134,6 +140,21 @@ func (s *Storage) QueryLogs(level, source, eventType, channelID, guildID, groupI
 	var entries []LogEntry
 	if err := query.Find(&entries).Error; err != nil {
 		return nil, fmt.Errorf("query logs: %w", err)
+	}
+	return entries, nil
+}
+
+// QueryLogsSince retrieves log entries with ID greater than the given lastID.
+// Returns entries ordered by ID ASC (oldest first within the new set).
+// The limit caps how many entries are returned (max 50).
+func (s *Storage) QueryLogsSince(lastID uint, limit int) ([]LogEntry, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	query := s.db.Model(&LogEntry{}).Where("id > ?", lastID).Order("id ASC").Limit(limit)
+	var entries []LogEntry
+	if err := query.Find(&entries).Error; err != nil {
+		return nil, fmt.Errorf("query logs since %d: %w", lastID, err)
 	}
 	return entries, nil
 }
