@@ -160,10 +160,26 @@ type HTTPConfig struct {
 	KeyFile  string `yaml:"key_file"`  // SSL 私钥文件路径（为空则不启用 SSL）
 }
 
+// SQLiteConfig represents SQLite-specific storage configuration.
+type SQLiteConfig struct {
+	DSN string `yaml:"dsn"` // 数据库文件路径
+}
+
+// MySQLConfig represents MySQL-specific storage configuration.
+type MySQLConfig struct {
+	User string `yaml:"user"` // 数据库用户名
+	Pass string `yaml:"pass"` // 数据库密码
+	Host string `yaml:"host"` // 数据库主机
+	Port int    `yaml:"port"` // 数据库端口
+	DB   string `yaml:"db"`   // 数据库名称
+}
+
 // StorageConfig represents storage backend configuration.
 type StorageConfig struct {
 	Driver     StorageDriver    `yaml:"driver"`
-	DSN        string           `yaml:"dsn"`
+	DSN        string           `yaml:"-"` // computed DSN, populated at config load
+	SQLite     SQLiteConfig     `yaml:"sqlite"`
+	MySQL      MySQLConfig      `yaml:"mysql"`
 	LogCleanup LogCleanupConfig `yaml:"log_cleanup"`
 }
 

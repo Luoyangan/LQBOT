@@ -63,9 +63,93 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, s contrac
 | `contract.ListenerRegister` | `Subscribe(listener Listener)` | 注册事件监听器 |
 | `contract.Scheduler` | `Every(cronExpr, fn)` / `Interval(d, fn)` | 注册定时任务 |
 | `contract.HTTPServer` | `Handle(path, handler)` / `ServeMux()` | 注册 HTTP 路由 |
-| `contract.QQAPI` | SendMessage / SendMarkdown / ReplyMarkdown / ReplyImage / SendImage / SendEmbedMessage / SendArkMessage / SendRichMedia / SendMessageWithButtons / SendGroupMessage / SendGroupMarkdown / SendGroupRichMedia / SendGroupMessageWithButtons / SendC2CMessage / SendC2CMarkdown / SendC2CRichMedia / SendC2CMessageWithButtons / DeleteMessage / DeleteGroupMessage / DeleteC2CMessage / PinMessage / UnpinMessage / CreateReaction / DeleteReaction / PutInteraction / ReplyInteraction / SendActiveC2CMessage / GetGuild / GetChannel / GetGuildMember / UploadChannelMedia | 调用 QQ API |
+| `contract.QQAPI` | SendMessage / SendMarkdown / ReplyMarkdown / ReplyImage / SendImage / SendEmbedMessage / SendArkMessage / SendRichMedia / SendMessageWithButtons / SendGroupMessage / SendGroupMarkdown / SendGroupRichMedia / SendGroupMessageWithButtons / SendC2CMessage / SendC2CMarkdown / SendC2CRichMedia / SendC2CMessageWithButtons / DeleteMessage / DeleteGroupMessage / DeleteC2CMessage / PinMessage / UnpinMessage / CreateReaction / DeleteReaction / PutInteraction / ReplyInteraction / SendActiveC2CMessage / GetGuild / GetChannel / GetGuildMember / UploadChannelMedia / UploadGroupMedia / UploadC2CMedia / AppID | 调用 QQ API |
+
+插件还可以接收框架内部包的具体类型以实现更强功能：
+
+| 类型 | 包 | 用途 |
+|------|-----|------|
+| `*log.Logger` | `internal/log` | 运行时切换日志级别（`SetLevel`/`Level`） |
+| `*blacklist.Manager` | `internal/blacklist` | 黑名单管理（`AddUser`/`RemoveUser`/`ListUsers` 等） |
+| `*cache.Cache` | `internal/cache` | TTL 内存缓存（`Get`/`Set`/`Delete`） |
+| `*template.Engine` | `internal/template` | 消息模板渲染（`Render`/`RenderSimple`） |
 
 > 不需要的参数不要在 `Register()` 中声明，框架不会传入 nil。
+
+### 方式二：实现 `contract.Plugin` 接口（推荐）
+
+这种方式更完整，插件通过 `PluginContext` 自动获取所有框架服务，无需手动传参。
+
+```go
+package myplugin
+
+import (
+    "github.com/Luoyangan/LQBOT/internal/contract"
+)
+
+type MyPlugin struct{}
+
+func (p *MyPlugin) Name() string { return "myplugin" }
+
+func (p *MyPlugin) Init(pc *contract.PluginContext) error {
+    // 注册指令
+    pc.Commands.Register(contract.Command{
+        Name: "greet",
+        Handler: func(ctx contract.CommandContext) error {
+            return ctx.Reply("hello from plugin")
+        },
+    })
+
+    // 注册事件监听器
+    pc.Listeners.Subscribe(contract.Listener{
+        Event: "GUILD_MEMBER_ADD",
+        Handler: func(ctx contract.EventContext) error {
+            pc.Logger.Info("new member", "user_id", ctx.AuthorID())
+            return nil
+        },
+    })
+
+    return nil
+}
+```
+
+在 `bot.go` 中注册：
+
+```go
+bot.RegisterPlugin(&myplugin.MyPlugin{})
+```
+
+插件名称 `Name()` 会用于从 `config.yaml` 的 `plugins.myplugin` 段查找专属配置。
+
+PluginContext 提供的框架服务：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `Commands` | `CommandRegister` | 注册指令 |
+| `Listeners` | `ListenerRegister` | 注册事件监听器 |
+| `Logger` | `Logger` | 日志记录 |
+| `Storage` | `Storage` | KV 存储直读直写 |
+| `QQAPI` | `QQAPI` | QQ API 调用 |
+| `PluginConfig` | `interface{}` | 从 config.yaml 注入的插件配置 |
+| `Scheduler` | `Scheduler` | 定时任务（可能为 nil） |
+| `HTTPServer` | `HTTPServer` | HTTP 路由注册（可能为 nil） |
+
+### demo — Plugin 接口示例
+
+`/demo` → 显示子命令帮助
+`/demo ping` → 测试插件状态
+`/demo config` → 显示 config.yaml 中的插件配置
+`/demo storage` → 演示 Storage KV 读写
+
+- 演示 `contract.Plugin` 接口的完整生命周期
+- 同时演示了：指令注册、Listener 订阅（MESSAGE_DELETE）、HTTP 路由注册（/demo）、PluginConfig 注入、Storage 直读
+- 配置示例（config.yaml）：
+  ```yaml
+  plugins:
+    demo:
+      enable_http: true
+      greeting: "你好，世界"
+  ```
 
 ## 指令定义
 
@@ -255,30 +339,84 @@ func Register(r contract.CommandRegister, h contract.HTTPServer) {
 ```yaml
 # config.yaml
 permissions:
-  delete: "admin"   # /delete 仅管理员可用
-  at: "owner"       # /at 仅群主可用
+  delete: "admin"         # /delete 仅管理员及以上可用
+  at: "owner"             # /at 仅群主可用
+  deletes: "admin_exact"  # /deletes 仅管理员（群主不可用）
+  test: "owner,member"    # /test 仅群主和普通成员（管理员不可用）
 ```
 
 ### 框架层：在指令中设置默认权限
 
 ```go
+// 模式一：层级包含（默认）
 r.Register(contract.Command{
     Name:       "admin-cmd",
-    Permission: "admin",  // 默认要求管理员权限（配置中同名指令可覆盖）
+    Permission: "admin",  // owner + admin 可执行
     Handler: func(ctx contract.CommandContext) error {
-        return ctx.Reply("仅管理员可执行")
+        return ctx.Reply("仅管理员及以上可执行")
+    },
+})
+
+// 模式二：精确匹配（_exact 后缀）
+r.Register(contract.Command{
+    Name:       "admin-only",
+    Permission: "admin_exact",  // 仅 admin，owner 不可用
+    Handler: func(ctx contract.CommandContext) error {
+        return ctx.Reply("仅管理员可执行，群主也不行")
+    },
+})
+
+// 模式三：角色列表（逗号分隔）
+r.Register(contract.Command{
+    Name:       "some-roles",
+    Permission: "owner,member",  // owner 或 member，不包括 admin
+    Handler: func(ctx contract.CommandContext) error {
+        return ctx.Reply("owner 和 member 可用")
     },
 })
 ```
 
 ### 框架层：角色级别
 
-| 级别 | 值 | 说明 |
-|------|-----|------|
-| 群主 | `owner` | 仅群主 |
-| 管理员 | `admin` | 群主 + 管理员 |
-| 群成员 | `member` | 所有群成员 |
-| 公开 | `public` | 所有人（包括非群聊场景） |
+框架层支持三种权限模式：
+
+| 模式 | 写法 | 效果 | 说明 |
+|------|------|------|------|
+| 层级包含 | `"admin"` | owner + admin ✅ | 权限向下包含，rank 小的自动允许 |
+| 精确匹配 | `"admin_exact"` | 仅 admin ✅ | 追加 `_exact` 后缀，只匹配该角色 |
+| 角色列表 | `"owner,member"` | owner / member ✅ | 逗号分隔，满足任一即允许 |
+
+**基础角色级别**：
+
+| 级别 | 值 | rank | 说明 |
+|------|-----|------|------|
+| 群主 | `owner` | 0 | 最高权限 |
+| 管理员 | `admin` | 1 | 群主 + 管理员（层级模式） |
+| 群成员 | `member` | 2 | 所有群成员 |
+| 公开 | `public` | 3 | 所有人（包括非群聊场景） |
+
+**三种模式详解**：
+
+模式一：层级包含（默认）
+```go
+Permission: "admin"         // rank 0(owner)+1(admin) ✅  2(member) ❌
+Permission: "member"        // rank 0+1+2 ✅  仅 public 场景 ❌
+Permission: "public"        // 全部允许
+```
+
+模式二：精确匹配（`_exact` 后缀）
+```go
+Permission: "owner_exact"   // 仅群主，admin 也不允许
+Permission: "admin_exact"   // 仅管理员，群主也不允许
+Permission: "member_exact"  // 仅普通群成员，owner/admin 不允许
+```
+
+模式三：角色列表（逗号分隔）
+```go
+Permission: "owner,member"  // 群主 + 普通成员，管理员不允许
+Permission: "owner,admin"   // 群主 + 管理员，普通成员不允许
+Permission: "owner,public"  // 群主 + 非群聊场景所有人
+```
 
 ### 框架层角色获取
 
@@ -310,17 +448,12 @@ func handler(ctx contract.CommandContext) error {
 
 ```go
 r.Register(contract.Command{
-    Name: "deletes",
+    Name:        "deletes",
+    Permission:  "admin",    // 框架层：仅群主/管理员可执行
     Handler: func(ctx contract.CommandContext) error {
         // ── 场景限制：仅允许群聊使用 ──
         if ctx.Scene() != contract.SceneGroup {
             return ctx.Reply("该命令仅支持群聊使用。")
-        }
-
-        // ── 角色限制：仅群主/管理员 ──
-        role := ctx.Role()
-        if role != "owner" && role != "admin" {
-            return ctx.Reply("仅群主和管理员可使用此命令。")
         }
 
         // ── 黑名单：禁止指定用户 ──
@@ -1494,27 +1627,34 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 
 `/server` → 显示当前频道/群聊信息
 `/whoami` → 显示你的频道成员信息（仅频道）
+`/avatar` → 获取你的 QQ 头像（通过 `https://q.qlogo.cn/qqapp/{appid}/{openid}/640` 构造）
 
 - 依赖 `CommandRegister` + `QQAPI`
-- 演示：`GetGuild`、`GetChannel`、`GetGuildMember`
-- 场景处理：群聊场景下 `/server` 只返回群 ID
+- 演示：`GetGuild`、`GetChannel`、`GetGuildMember`、`AppID()`、`SendGroupRichMedia`、`SendC2CRichMedia`、`ReplyImage`
+- 场景处理：群聊场景下 `/server` 只返回群 ID；`/avatar` 在三场景分别走 `SendGroupRichMedia` / `SendC2CRichMedia` / `ReplyImage`
 
 ### media — 富媒体消息
 
-`/image` → 发送示例图片
-`/video` → 发送示例视频
+`/image` → 发送示例图片（file_type=1）
+`/video` → 发送示例视频（file_type=2）
+`/voice` → 发送示例语音（file_type=3，支持 silk/wav/mp3/flac）
+`/file` → 发送示例文件（file_type=4）
 
 - 依赖 `CommandRegister` + `QQAPI`
 - 演示：`ReplyImage`（频道，被动回复带 msg_id）、`SendGroupRichMedia`（群聊）、`SendC2CRichMedia`（C2C）
 - 群聊/C2C 场景使用两步流程：上传 → 携带 msg_id 被动回复发送
 - 三场景自动路由（`switch ctx.Scene()`），频道用 `ReplyImage` 绕过主动推送时间限制
-- 视频仅在群聊/C2C 支持，频道会提示不可用
-- **注意**：URL 需先在管理端报备
+- 视频/语音/文件仅在群聊/C2C 支持，频道会提示不可用
+- **注意**：
+  - URL 所在域名需先在 QQ 开放平台「开发设置 → 消息URL配置」中注册
+  - 语音支持 silk/wav/mp3/flac 格式
+  - 图片支持 png/jpg 格式，视频支持 mp4 格式
 
 ### manage — 消息管理
 
 `/delete <消息ID>` → 撤回消息（三场景均支持）
 `/deletes <消息ID>` → 撤回消息（仅群聊，群主/管理员可用）
+- 场景限制仅群聊 + 框架层 `Permission: "admin"` 自动拦截非管理员
 `/react <表情ID>` → 给消息添加表情反应（仅频道）
 `/pin <消息ID>` → 设置精华消息（仅频道）
 `/unpin <消息ID>` → 取消精华消息（仅频道）
@@ -1522,22 +1662,19 @@ func Register(r contract.CommandRegister, l contract.ListenerRegister, api contr
 - 依赖 `CommandRegister` + `QQAPI`
 - 演示：`DeleteMessage`（三场景路由）、`DeleteGroupMessage`、`CreateReaction`、`PinMessage`、`UnpinMessage`
 - 表情格式：`1:4`（系统表情）或 `2:❤️`（Unicode 表情）
-- `/deletes` 演示 Handler 层自定义权限检查：限制群聊场景 + 仅群主/管理员
+- `/deletes` 演示框架层权限 + 场景守卫：`Permission: "admin"` + 仅群聊
 
 ```go
-// /deletes — 演示自定义权限检查
+// /deletes — 框架层权限 + 场景守卫
 r.Register(contract.Command{
     Name:        "deletes",
     Description: "撤回消息（仅群主/管理员可用）",
     Usage:       "deletes <消息ID>",
+    Permission:  "admin", // 框架层：仅群主/管理员可执行
     Handler: func(ctx contract.CommandContext) error {
-        // 权限检查：仅群聊场景，且仅群主/管理员可用
+        // 场景限制：仅允许群聊使用
         if ctx.Scene() != contract.SceneGroup {
             return ctx.Reply("该命令仅支持群聊使用。")
-        }
-        role := ctx.Role()
-        if role != "owner" && role != "admin" {
-            return ctx.Reply("仅群主和管理员可使用此命令。")
         }
 
         if ctx.ArgCount() == 0 {
@@ -1584,12 +1721,55 @@ r.Register(contract.Command{
 - `CmdInput` 参数指令（所有场景）和 `CmdEnter` 回车指令（仅 C2C）
 - `/mda` 命令演示 `ctx.ReplyMarkdown()` 被动回复
 
-### menu — 简易菜单
+### menu — 自动帮助菜单
 
-`/menu` → 显示当前场景和发送者信息
+`/menu [指令名]` → 显示所有注册指令的帮助列表
+`/menu echo` → 查看 `/echo` 的详细帮助
 
-- 依赖 `contract.CommandRegister`（最简依赖）
-- 演示：`Scene()` 场景识别 + `AuthorID()` 获取发送者
+- 依赖 `contract.CommandRegister` + `CommandsFunc`（自动获取已注册指令列表）
+- 自动扫描 `router.Commands()` 生成动态帮助菜单，按字母排序
+- 支持 `/menu <指令名>` 查看单个指令详情（含别名、用法、说明）
+- 无需手动维护帮助列表，新增插件自动出现
+
+### loglevel — 日志级别热切换
+
+`/loglevel` → 显示当前日志级别
+`/loglevel debug` → 切换为 debug 级别
+`/loglevel info` → 切回 info 级别
+
+- 依赖 `*log.Logger`
+- 支持 `trace` / `debug` / `info` / `warn` / `error` 五级
+- 运行时立即生效，无需重启
+
+### status — 运行状态诊断
+
+`/status` → 显示机器人运行状态
+
+- 依赖 `StatusFunc`（由 Bot 提供）
+- 显示：版本号、运行时间、协程数、内存使用、日志级别
+
+### blacklist — 黑名单管理
+
+`/blacklist` → 显示当前黑名单
+`/blacklist add user <openID>` → 将用户加入黑名单
+`/blacklist add group <groupID>` → 将群聊加入黑名单
+`/blacklist remove user <openID>` → 移出用户黑名单
+`/blacklist list` → 列出所有黑名单
+
+- 依赖 `*blacklist.Manager`
+- 持久化到 storage，重启不丢失
+- 配合框架级 `BlacklistMiddleware` 自动过滤
+
+### timer — 定时任务示例
+
+`/timer` → 查看已注册的定时任务
+
+- 依赖 `contract.Scheduler` + `*log.Logger`
+- 演示两种调度模式：`Interval`（固定间隔）和 `Every`（cron 表达式）
+- 注册两个示例任务：
+  - **心跳**: 每 10 分钟输出一条 INFO 日志
+  - **整点报告**: 每小时 05 分输出整点日志
+- 插件注册时自动启动，无需手动管理
 
 ## 数据库访问
 
@@ -1813,4 +1993,4 @@ storage:
 - 禁止使用 `init()` 注册，所有注册通过显式 `Register()` 调用
 - 新增插件三步：① 创建包 ② 实现 Register() ③ 在 bot.go 的 registerPlugins() 中添加
 
-更新时间：2026-07-07
+更新时间：2026-07-08

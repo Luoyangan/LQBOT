@@ -93,17 +93,22 @@ func (b *Bot) registerPlugins() {
 ## 核心特性
 
 - **多协议接入**: WebSocket（自动重连 + 指数退避）、Webhook
-- **指令系统**: `/command` 前缀、参数解析、别名支持
+- **指令系统**: `/command` 前缀、参数解析、别名支持、自动帮助菜单
 - **事件驱动**: 事件总线，支持 QQ API v2 原生事件格式
-- **中间件**: 日志、限流（Token Bucket）
+- **安全加固**: 指令 panic 自动恢复、事件处理 30s 超时控制
+- **中间件**: 日志、限流（Token Bucket）、黑名单过滤
 - **权限控制**: 基于群聊 member_role（owner/admin/member/public）
-- **定时任务**: Cron 表达式 + 固定间隔（基于 robfig/cron/v3）
+- **定时任务**: Cron 表达式 + 固定间隔（基于 robfig/cron/v3），示例见 `/timer` 插件
 - **内嵌 HTTP**: 可选嵌入式 HTTP 服务器，插件可注册路由
 - **数据库**: SQLite + GORM，自动迁移，内置日志/实体/统计表
-- **日志系统**: 结构化日志（zerolog），控制台着色 + 数据库双写
+- **日志系统**: 结构化日志（zerolog），控制台着色 + 数据库双写，**运行时热切换日志级别**
+- **缓存层**: TTL 内存缓存，减少高频 KV 读取的 SQLite 开销
+- **黑名单系统**: 用户/群聊黑名单，持久化存储 + 内存缓存，运行时管理
+- **消息模板引擎**: 支持 `{user.id}`、`{time.now}` 等变量替换的统一模板系统
 - **消息类型**: 文本、Markdown、图片、Ark、Embed、富媒体、按钮交互
 - **被动回复**: 统一带 msg_id 的被动回复，绕过公域机器人主动消息限制
 - **优雅关闭**: SIGINT/SIGTERM 捕获，超时控制
+- **运行诊断**: `/status` 查看协程数/内存/uptime，`/loglevel` 切换日志级别
 
 ## 示例插件
 
@@ -118,7 +123,12 @@ func (b *Bot) registerPlugins() {
 | media | `/image` `/video` | 图片/视频 |
 | manage | `/delete` `/pin` `/react` | 消息管理 |
 | markdown | `/md` `/mda` | Markdown 消息 |
-| menu | `/menu` | 简易菜单 |
+| menu | `/menu [指令名]` | 自动生成帮助菜单 |
+| **timer** | `/timer` | 定时任务查看 |
+| **status** | `/status` | 运行状态诊断（版本/协程/内存/uptime） |
+| **loglevel** | `/loglevel [level]` | 运行时切换日志级别 |
+| **blacklist** | `/blacklist add/remove/list` | 黑名单管理 |
+| **demo** | `/demo config/storage/ping` | Plugin 接口生命周期示例 |
 
 ## 配置参考
 

@@ -23,6 +23,7 @@ type Storage interface {
 	Set(key string, value interface{}) error
 	Delete(key string) error
 	Close() error
+	Driver() string
 }
 
 // QQAPI abstracts calls to the QQ Official API v2.
@@ -119,6 +120,12 @@ type QQAPI interface {
 	// the bot can send up to 4 recall messages across 4 time windows.
 	// See: https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/send-receive/send.html
 	SendActiveC2CMessage(userID, content string, isWakeup bool) error
+
+	// === Bot info ===
+	// AppID returns the bot's App ID (from config), used for constructing
+	// platform URLs such as the user avatar endpoint:
+	//   https://q.qlogo.cn/qqapp/{appid}/{openid}/640
+	AppID() string
 
 	// === Guild / Channel info ===
 	// GetGuild retrieves guild (server) information by ID.
@@ -469,6 +476,19 @@ type PluginContext struct {
 	Logger    Logger
 	Storage   Storage
 	QQAPI     QQAPI
+
+	// PluginConfig is the optional configuration section from config.yaml for this plugin.
+	// The value comes from config.plugins[plugin.Name()] and is nil if not configured.
+	PluginConfig interface{}
+
+	// Scheduler for registering cron/interval tasks.
+	// May be nil if the scheduler is not initialized.
+	Scheduler Scheduler
+
+	// HTTPServer for registering HTTP routes.
+	// Only available when the embedded HTTP server is enabled.
+	// May be nil if the HTTP server is not initialized.
+	HTTPServer HTTPServer
 }
 
 // ── Text chain interactive elements ──

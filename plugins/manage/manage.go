@@ -42,14 +42,11 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 		Name:        "deletes",
 		Description: "撤回消息（仅群主/管理员可用）",
 		Usage:       "deletes <消息ID>",
+		Permission:  "admin",
 		Handler: func(ctx contract.CommandContext) error {
-			// 权限检查：仅群聊场景，且仅群主/管理员可用
+			// 仅允许群聊场景
 			if ctx.Scene() != contract.SceneGroup {
 				return ctx.Reply("该命令仅支持群聊使用。")
-			}
-			role := ctx.Role()
-			if role != "owner" && role != "admin" {
-				return ctx.Reply("仅群主和管理员可使用此命令。")
 			}
 
 			if ctx.ArgCount() == 0 {

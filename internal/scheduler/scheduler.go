@@ -55,6 +55,31 @@ func (s *Scheduler) Start() {
 	s.cron.Start()
 }
 
+// TaskInfo holds scheduler task info for display.
+type TaskInfo struct {
+	Name string // task name
+	Spec string // cron expression
+}
+
+// Tasks returns a snapshot of all registered scheduled tasks.
+func (s *Scheduler) Tasks() []TaskInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	infos := make([]TaskInfo, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		infos = append(infos, TaskInfo{Name: j.Name, Spec: j.Spec})
+	}
+	return infos
+}
+
+// HasTasks returns whether any tasks are registered.
+func (s *Scheduler) HasTasks() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.jobs) > 0
+}
+
 // Stop gracefully stops the scheduler, waiting for running jobs to finish.
 func (s *Scheduler) Stop() {
 	s.mu.Lock()

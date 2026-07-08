@@ -64,4 +64,60 @@ func Register(r contract.CommandRegister, api contract.QQAPI) {
 			}
 		},
 	})
+
+	// /voice — sends a voice message (group/C2C only)
+	r.Register(contract.Command{
+		Name:        "voice",
+		Description: "发送一个示例语音",
+		Usage:       "voice",
+		Handler: func(ctx contract.CommandContext) error {
+			voiceURL := "https://wd.lilei007.cn/Luoyangan/1.mp3"
+
+			switch ctx.Scene() {
+			case contract.SceneGroup:
+				return api.SendGroupRichMedia(ctx.GroupID(), &contract.RichMedia{
+					FileType: 3, // voice
+					URL:      voiceURL,
+					Content:  "听这段语音",
+					MsgID:    ctx.MessageID(),
+				})
+			case contract.SceneC2C:
+				return api.SendC2CRichMedia(ctx.AuthorID(), &contract.RichMedia{
+					FileType: 3,
+					URL:      voiceURL,
+					MsgID:    ctx.MessageID(),
+				})
+			default:
+				return ctx.Reply("语音消息目前仅支持群聊和 C2C 场景。")
+			}
+		},
+	})
+
+	// /file — sends a file (group/C2C only)
+	r.Register(contract.Command{
+		Name:        "file",
+		Description: "发送一个示例文件",
+		Usage:       "file",
+		Handler: func(ctx contract.CommandContext) error {
+			fileURL := "https://wd.lilei007.cn/Luoyangan/1.zip"
+
+			switch ctx.Scene() {
+			case contract.SceneGroup:
+				return api.SendGroupRichMedia(ctx.GroupID(), &contract.RichMedia{
+					FileType: 4, // file
+					URL:      fileURL,
+					Content:  "下载这个文件",
+					MsgID:    ctx.MessageID(),
+				})
+			case contract.SceneC2C:
+				return api.SendC2CRichMedia(ctx.AuthorID(), &contract.RichMedia{
+					FileType: 4,
+					URL:      fileURL,
+					MsgID:    ctx.MessageID(),
+				})
+			default:
+				return ctx.Reply("文件消息目前仅支持群聊和 C2C 场景。")
+			}
+		},
+	})
 }

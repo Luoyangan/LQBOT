@@ -46,6 +46,7 @@ var levelWeights = map[string]int{
 
 // Logger implements contract.Logger using zerolog.
 // It supports both console output and optional database writing.
+// Logger implements contract.Logger using zerolog.
 type Logger struct {
 	zerolog.Logger
 	mu        sync.RWMutex
@@ -53,6 +54,7 @@ type Logger struct {
 	source    string
 	dbLevel   int      // minimum severity for DB writes (0=all, 4=error only); -1 = disabled
 	dbExclude []string // messages containing any of these substrings are NOT written to DB
+	level     string   // current log level string
 }
 
 // New creates a new Logger with the given log level and optional color config.
@@ -91,7 +93,39 @@ func NewWithConfig(level types.LogLevel, noColor bool) *Logger {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
-	return &Logger{Logger: zl}
+	return &Logger{Logger: zl, level: string(level)}
+}
+
+// SetLevel changes the log level at runtime.
+// Returns the previous level string.
+func (l *Logger) SetLevel(level types.LogLevel) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	prev := l.level
+	l.level = string(level)
+
+	switch level {
+	case types.LogLevelTrace:
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	case types.LogLevelDebug:
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case types.LogLevelInfo:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case types.LogLevelWarn:
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	case types.LogLevelError:
+		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+	return prev
+}
+
+// Level returns the current log level string.
+func (l *Logger) Level() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.level
 }
 
 // SetDBWriter attaches a database writer to the logger.

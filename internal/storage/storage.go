@@ -1,4 +1,4 @@
-// Package storage implements the Storage interface using GORM + SQLite.
+// Package storage implements the Storage interface using GORM.
 package storage
 
 import (
@@ -7,21 +7,31 @@ import (
 
 	"github.com/Luoyangan/LQBOT/internal/types"
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// Storage implements contract.Storage using GORM with SQLite.
+// Storage implements contract.Storage using GORM.
 type Storage struct {
 	mu   sync.RWMutex
 	db   *gorm.DB
 	dsn  string
+	driver types.StorageDriver
 	data map[string]string // Simple KV cache
 }
 
-// New creates a new Storage instance.
+// New creates a new Storage instance. Supports "sqlite" and "mysql" drivers.
 func New(cfg types.StorageConfig) (*Storage, error) {
-	db, err := gorm.Open(sqlite.Open(cfg.DSN), &gorm.Config{
+	var dialector gorm.Dialector
+	switch cfg.Driver {
+	case types.StorageMySQL:
+		dialector = mysql.Open(cfg.DSN)
+	default:
+		dialector = sqlite.Open(cfg.DSN)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -52,9 +62,10 @@ func New(cfg types.StorageConfig) (*Storage, error) {
 	}
 
 	return &Storage{
-		db:   db,
-		dsn:  cfg.DSN,
-		data: make(map[string]string),
+		db:     db,
+		dsn:    cfg.DSN,
+		driver: cfg.Driver,
+		data:   make(map[string]string),
 	}, nil
 }
 
@@ -122,6 +133,9 @@ func (s *Storage) Close() error {
 
 // DSN returns the database DSN/path string.
 func (s *Storage) DSN() string { return s.dsn }
+
+// Driver returns the storage driver type ("sqlite" or "mysql").
+func (s *Storage) Driver() string { return string(s.driver) }
 
 // DB returns the underlying GORM database for advanced queries.
 func (s *Storage) DB() *gorm.DB { return s.db }

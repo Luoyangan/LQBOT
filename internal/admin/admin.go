@@ -24,6 +24,7 @@ import (
 
 	"github.com/Luoyangan/LQBOT/internal/contract"
 	framelog "github.com/Luoyangan/LQBOT/internal/log"
+	"github.com/Luoyangan/LQBOT/internal/scheduler"
 	"github.com/Luoyangan/LQBOT/internal/storage"
 )
 
@@ -40,10 +41,10 @@ type VersionInfo struct {
 
 // BotStatus holds live status of bot components for the dashboard.
 type BotStatus struct {
-	Running   bool // bot event loop is active
-	Adapter   bool // WebSocket / Webhook connected
-	Database  bool // SQLite connected
-	HTTPServe bool // HTTP server is running
+	Running   bool   // bot event loop is active
+	Adapter   bool   // WebSocket / Webhook connected
+	Database  string // database driver name ("sqlite", "mysql"), empty when unavailable
+	HTTPServe bool   // HTTP server is running
 }
 
 // dashData is the data model passed to the dashboard template.
@@ -63,7 +64,7 @@ type dashData struct {
 	// Dynamic status
 	BotRunning   bool
 	BotAdapter   bool
-	BotDatabase  bool
+	BotDatabase  string
 	BotHTTPServe bool
 
 	// Recent logs (feature 1)
@@ -97,6 +98,9 @@ type dashData struct {
 	// Network I/O (total since boot, in bytes)
 	NetRX uint64
 	NetTX uint64
+
+	// Scheduler tasks
+	SchedulerTasks []scheduler.TaskInfo
 
 	// DB info (feature 8)
 	DBPath       string
@@ -159,6 +163,9 @@ type Admin struct {
 
 	commands []contract.Command
 
+	// Scheduler reference for task display
+	scheduler *scheduler.Scheduler
+
 	// SSE clients
 	sseClients   map[string]chan string
 	sseClientsMu sync.RWMutex
@@ -206,7 +213,7 @@ func (a *Admin) PublishEvent(eventType, summary string) {
 }
 
 // New creates a new Admin instance and registers routes on the given mux.
-func New(store *storage.Storage, logger *framelog.Logger, mux *http.ServeMux, ver VersionInfo, restartFn func() error, shutdownFn func()) *Admin {
+func New(store *storage.Storage, logger *framelog.Logger, mux *http.ServeMux, ver VersionInfo, restartFn func() error, shutdownFn func(), schedulers ...*scheduler.Scheduler) *Admin {
 	if store == nil {
 		return nil
 	}
@@ -223,8 +230,13 @@ func New(store *storage.Storage, logger *framelog.Logger, mux *http.ServeMux, ve
 		version:     ver,
 		startedAt:   time.Now(),
 		sseClients:  make(map[string]chan string),
+		scheduler:   nil,
 		restartFn:   restartFn,
 		shutdownFn:  shutdownFn,
+	}
+
+	if len(schedulers) > 0 {
+		a.scheduler = schedulers[0]
 	}
 
 	mux.HandleFunc("/admin", a.handleAdmin)
@@ -509,6 +521,11 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		data.ActiveChannels = channels
 	}
 
+	// 5b. Scheduler tasks
+	if a.scheduler != nil {
+		data.SchedulerTasks = a.scheduler.Tasks()
+	}
+
 	// 6. System resources
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -531,8 +548,10 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// 8. DB info
 	dbPath := a.store.DSN()
 	data.DBPath = dbPath
-	if fi, err := os.Stat(dbPath); err == nil {
-		data.DBFileSize = fi.Size()
+	if a.store.Driver() == "sqlite" {
+		if fi, err := os.Stat(dbPath); err == nil {
+			data.DBFileSize = fi.Size()
+		}
 	}
 	if n, err := a.store.CountLogs(); err == nil {
 		data.DBLogCount = n
@@ -567,7 +586,7 @@ type resourceSnapshot struct {
 	Uptime      string     `json:"ut"`
 	BotRunning  bool       `json:"br"`
 	BotAdapter  bool       `json:"ba"`
-	BotDatabase bool       `json:"bd"`
+	BotDatabase string     `json:"bd"`
 }
 
 func (a *Admin) collectSnapshot() (snap resourceSnapshot) {
@@ -731,8 +750,12 @@ type dbSnapshot struct {
 func (a *Admin) collectDBInfo() dbSnapshot {
 	var sn dbSnapshot
 	dbPath := a.store.DSN()
-	if fi, err := os.Stat(dbPath); err == nil {
-		sn.FileSize = fmt.Sprintf("%.1f KB", float64(fi.Size())/1024)
+	if a.store.Driver() == "sqlite" {
+		if fi, err := os.Stat(dbPath); err == nil {
+			sn.FileSize = fmt.Sprintf("%.1f KB", float64(fi.Size())/1024)
+		}
+	} else {
+		sn.FileSize = "—"
 	}
 	if n, err := a.store.CountLogs(); err == nil {
 		sn.LogCount = fmt.Sprintf("%d", n)
@@ -1232,10 +1255,10 @@ func renderDashboard(w io.Writer, d dashData) {
 	resGor := fmt.Sprintf("%d", d.SysGoroutines)
 	sysMemUsed, sysMemTotal := getSystemMemoryGB()
 	resSysMem := fmt.Sprintf("%.1f / %.1f GB", sysMemUsed, sysMemTotal)
-	writeResCard(w, resSysMem, "内存")
 	cpuPct := getSystemCPUUsage()
 	procCpuPct := getProcessCPUUsage()
 	writeResCard(w, fmt.Sprintf("%.1f%% (%d核)", cpuPct, runtime.NumCPU()), "CPU")
+	writeResCard(w, resSysMem, "内存")
 	writeResCard(w, fmt.Sprintf("%.1f%%", procCpuPct), "进程CPU")
 	writeResCard(w, resMem, "进程内存")
 	writeResCard(w, resGor, "Goroutine")
@@ -1408,7 +1431,7 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("<div id=\"tab-logs\" class=\"tab-panel active\">\n"))
 	w.Write([]byte("<div class=\"log-scroll\">\n"))
 	if len(d.RecentLogs) > 0 {
-		w.Write([]byte("<table class=\"log-table\">\n<thead><tr><th>级别</th><th>时间</th><th>消息</th><th>来源</th><th>事件</th></tr></thead>\n<tbody>\n"))
+		w.Write([]byte("<table class=\"log-table\">\n<thead><tr><th>级别</th><th>时间</th><th>消息</th><th>事件</th></tr></thead>\n<tbody>\n"))
 		for _, l := range d.RecentLogs {
 			levelClass := "log-lv-" + l.Level
 			msg := template.HTMLEscapeString(l.Message)
@@ -1417,8 +1440,8 @@ func renderDashboard(w io.Writer, d dashData) {
 				msg = msg[:80] + "…"
 			}
 			timeStr := l.CreatedAt.Format("15:04:05")
-			w.Write([]byte(fmt.Sprintf("<tr><td><span class=\"log-level %s\">%s</span></td><td>%s</td><td title=\"%s\">%s</td><td>%s</td><td>%s</td></tr>\n",
-				levelClass, l.Level, timeStr, fullMsg, msg, l.Source, l.EventType)))
+			w.Write([]byte(fmt.Sprintf("<tr><td><span class=\"log-level %s\">%s</span></td><td>%s</td><td title=\"%s\">%s</td><td>%s</td></tr>\n",
+				levelClass, l.Level, timeStr, fullMsg, msg, l.EventType)))
 		}
 		w.Write([]byte("</tbody></table>\n"))
 	} else {
@@ -1507,6 +1530,22 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("</div>\n")) // tab
 	w.Write([]byte("</div>\n")) // section
 
+	// ---- 7. Scheduled Tasks (feature 7) ----
+	w.Write([]byte("<div class=\"section\">\n  <h3>定时任务</h3>\n"))
+	if len(d.SchedulerTasks) > 0 {
+		w.Write([]byte("  <table class=\"tbl\">\n"))
+		w.Write([]byte("    <thead><tr><th>名称</th><th>调度表达式</th></tr></thead>\n<tbody>\n"))
+		for _, t := range d.SchedulerTasks {
+			w.Write([]byte(fmt.Sprintf("    <tr><td>%s</td><td><code>%s</code></td></tr>\n",
+				template.HTMLEscapeString(t.Name),
+				template.HTMLEscapeString(t.Spec))))
+		}
+		w.Write([]byte("  </tbody></table>\n"))
+	} else {
+		w.Write([]byte("  <p style=\"font-size:13px;color:#999\">暂无定时任务</p>\n"))
+	}
+	w.Write([]byte("</div>\n"))
+
 	// ---- 8. DB Info (feature 8) ----
 	w.Write([]byte("<div class=\"section\">\n  <h3>数据库信息</h3>\n"))
 	w.Write([]byte("<div class=\"res-grid\" id=\"db-grid\">\n"))
@@ -1530,7 +1569,7 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte(fmt.Sprintf("    <tr><td>运行时长</td><td id=\"info-uptime\">%s</td></tr>\n", d.Uptime)))
 	w.Write([]byte(fmt.Sprintf("    <tr><td>运行状态</td><td id=\"info-status\">%s</td></tr>\n", statusHTML(d.BotRunning, "正常", "启动中"))))
 	w.Write([]byte(fmt.Sprintf("    <tr><td>WebSocket</td><td id=\"info-adapter\">%s</td></tr>\n", statusHTML(d.BotAdapter, "已连接", "未连接"))))
-	w.Write([]byte(fmt.Sprintf("    <tr><td>数据库</td><td id=\"info-db\">%s</td></tr>\n", statusHTML(d.BotDatabase, "已连接", "未连接"))))
+	w.Write([]byte(fmt.Sprintf("    <tr><td>数据库</td><td id=\"info-db\">%s</td></tr>\n", statusDBHTML(d.BotDatabase))))
 	w.Write([]byte("  </table>\n</div>\n"))
 
 	// Footer
@@ -1550,7 +1589,7 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("  var ut=document.getElementById('info-uptime');if(ut)ut.textContent=d.ut;\n"))
 	w.Write([]byte("  var st=document.getElementById('info-status');if(st)st.innerHTML=statusHTML(d.br,'\u6B63\u5E38','\u542F\u52A8\u4E2D');\n"))
 	w.Write([]byte("  var ad=document.getElementById('info-adapter');if(ad)ad.innerHTML=statusHTML(d.ba,'\u5DF2\u8FDE\u63A5','\u672A\u8FDE\u63A5');\n"))
-	w.Write([]byte("  var db=document.getElementById('info-db');if(db)db.innerHTML=statusHTML(d.bd,'\u5DF2\u8FDE\u63A5','\u672A\u8FDE\u63A5');\n"))
+	w.Write([]byte("  var db=document.getElementById('info-db');if(db)db.innerHTML=d.bd?'<span style=\"color:#16a34a\">\\u25CF '+d.bd+'</span>':'<span style=\"color:#999\">\\u25CB \\u672A\\u8FDE\\u63A5</span>';\n"))
 	w.Write([]byte("  // Update disk list\n  var list=document.getElementById('disk-list');\n"))
 	w.Write([]byte("  if(list&&d.disks&&d.disks.length>0){\n    var html='';\n"))
 	w.Write([]byte("    for(var i=0;i<d.disks.length;i++){\n      var disk=d.disks[i];\n"))
@@ -1714,6 +1753,13 @@ func statusHTML(ok bool, okLabel, failLabel string) string {
 		return "<span style=\"color:#16a34a\">● " + okLabel + "</span>"
 	}
 	return "<span style=\"color:#999\">○ " + failLabel + "</span>"
+}
+
+func statusDBHTML(driver string) string {
+	if driver == "" {
+		return "<span style=\"color:#999\">○ 未连接</span>"
+	}
+	return "<span style=\"color:#16a34a\">● " + driver + "</span>"
 }
 
 func formatDuration(d time.Duration) string {

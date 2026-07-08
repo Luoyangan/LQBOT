@@ -2,19 +2,25 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Luoyangan/LQBOT/internal/adapter"
 	"github.com/Luoyangan/LQBOT/internal/admin"
+	fwblacklist "github.com/Luoyangan/LQBOT/internal/blacklist"
 	"github.com/Luoyangan/LQBOT/internal/bus"
+	"github.com/Luoyangan/LQBOT/internal/cache"
 	"github.com/Luoyangan/LQBOT/internal/config"
 	"github.com/Luoyangan/LQBOT/internal/contract"
 	"github.com/Luoyangan/LQBOT/internal/handler"
@@ -24,19 +30,25 @@ import (
 	"github.com/Luoyangan/LQBOT/internal/permission"
 	"github.com/Luoyangan/LQBOT/internal/scheduler"
 	"github.com/Luoyangan/LQBOT/internal/storage"
+	fwtmpl "github.com/Luoyangan/LQBOT/internal/template"
 	"github.com/Luoyangan/LQBOT/internal/types"
 	"github.com/Luoyangan/LQBOT/internal/utils"
 	"github.com/Luoyangan/LQBOT/internal/version"
 	"github.com/Luoyangan/LQBOT/plugins/ark"
+	"github.com/Luoyangan/LQBOT/plugins/blacklist"
+	"github.com/Luoyangan/LQBOT/plugins/demo"
 	"github.com/Luoyangan/LQBOT/plugins/echo"
 	"github.com/Luoyangan/LQBOT/plugins/embed"
 	"github.com/Luoyangan/LQBOT/plugins/hello"
 	"github.com/Luoyangan/LQBOT/plugins/info"
+	"github.com/Luoyangan/LQBOT/plugins/loglevel"
 	"github.com/Luoyangan/LQBOT/plugins/manage"
 	"github.com/Luoyangan/LQBOT/plugins/markdown"
 	"github.com/Luoyangan/LQBOT/plugins/media"
 	"github.com/Luoyangan/LQBOT/plugins/menu"
 	"github.com/Luoyangan/LQBOT/plugins/ping"
+	pkggrp "github.com/Luoyangan/LQBOT/plugins/status"
+	"github.com/Luoyangan/LQBOT/plugins/timer"
 	// <--new-plugin-import-here
 	"github.com/tencent-connect/botgo"
 	"github.com/tencent-connect/botgo/constant"
@@ -44,6 +56,7 @@ import (
 	"github.com/tencent-connect/botgo/dto/keyboard"
 	"github.com/tencent-connect/botgo/openapi"
 	"github.com/tencent-connect/botgo/token"
+	"golang.org/x/oauth2"
 )
 
 // Bot is the core framework instance.
@@ -71,6 +84,22 @@ type Bot struct {
 
 	// Permission checker
 	permChecker *permission.Checker
+
+	// Blacklist manager
+	blacklistMgr *fwblacklist.Manager
+
+	// In-memory cache
+	cache *cache.Cache
+
+	// Template engine
+	templateEngine *fwtmpl.Engine
+
+	// Plugins that use the Plugin interface (Init-based lifecycle)
+	plugins []contract.Plugin
+
+	// Runtime stats
+	botStartTime time.Time
+	cmdCount     int64
 
 	// Lifecycle
 	ctx    context.Context
@@ -140,6 +169,15 @@ func New(cfg *types.Config) (*Bot, error) {
 	// Initialize command router
 	router := handler.NewCommandRouter()
 
+	// Initialize in-memory cache
+	fwCache := cache.New(5 * time.Minute)
+
+	// Initialize blacklist manager
+	blMgr := fwblacklist.New(store, logger)
+
+	// Initialize template engine
+	tmplEngine := fwtmpl.New("LQBOT")
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bot := &Bot{
@@ -153,10 +191,17 @@ func New(cfg *types.Config) (*Bot, error) {
 		rateLimiter:      rl,
 		scheduler:        scheduler.New(),
 		permChecker:      permission.NewChecker(cfg.Permissions, logger),
+		blacklistMgr:     blMgr,
+		cache:            fwCache,
+		templateEngine:   tmplEngine,
+		botStartTime:     time.Now(),
 		ctx:              ctx,
 		cancel:           cancel,
 		logCleanupRunning: make(chan struct{}),
 	}
+
+	// Add blacklist middleware (early in chain, before logging)
+	mwChain.Add(middleware.NewBlacklistMiddleware(blMgr, logger))
 
 	// Initialize embedded HTTP server if enabled
 	if cfg.HTTP.Enabled {
@@ -178,12 +223,16 @@ func New(cfg *types.Config) (*Bot, error) {
 				bot.logger.Warn("shutting down via admin panel")
 				bot.shutdown()
 				os.Exit(0)
-			})
+			}, bot.scheduler)
 		}
 	}
 
 	// Register plugins (commands + event listeners)
 	bot.registerPlugins()
+	bot.initPluginSystem()
+
+	// Register demo plugin (Plugin interface pattern)
+	bot.RegisterPlugin(demo.New())
 
 	// Pass registered commands to admin panel
 	if bot.adminPanel != nil {
@@ -197,8 +246,47 @@ func New(cfg *types.Config) (*Bot, error) {
 // Each plugin's Register() is called with the narrow interfaces it needs.
 // Available narrow interfaces: CommandRegister, ListenerRegister, QQAPI,
 // Scheduler, HTTPServer (nil when disabled), and json.RawMessage for plugin config.
+// RegisterPlugin registers a plugin that implements the Plugin interface.
+// Its Init() method will be called during bot startup.
+func (b *Bot) RegisterPlugin(p contract.Plugin) {
+	b.plugins = append(b.plugins, p)
+}
+
+// initPluginSystem calls Init() on all registered Plugin interface plugins.
+// This must be called AFTER registerPlugins() so all Register() calls are done first.
+func (b *Bot) initPluginSystem() {
+	for _, p := range b.plugins {
+		pc := &contract.PluginContext{
+			Commands:  b.router,
+			Listeners: b.eventBus,
+			Logger:    b.logger,
+			Storage:   b.storage,
+			QQAPI:     b.api,
+			Scheduler: b.scheduler,
+		}
+
+		// Inject plugin config from config.yaml if available
+		if b.cfg.Plugins != nil {
+			if cfg, ok := b.cfg.Plugins[p.Name()]; ok {
+				pc.PluginConfig = cfg
+			}
+		}
+
+		// Inject HTTP server if enabled
+		if b.httpSrv != nil {
+			pc.HTTPServer = b.httpSrv
+		}
+
+		if err := p.Init(pc); err != nil {
+			b.logger.Error("plugin init failed", "plugin", p.Name(), "error", err)
+		} else {
+			b.logger.Info("plugin initialized", "plugin", p.Name())
+		}
+	}
+}
+
 func (b *Bot) registerPlugins() {
-	menu.Register(b.router)
+	menu.Register(b.router, b.router.Commands)
 	ping.Register(b.router)
 	echo.Register(b.router)
 	hello.Register(b.router, b.eventBus, b.api)
@@ -208,6 +296,12 @@ func (b *Bot) registerPlugins() {
 	media.Register(b.router, b.api)
 	manage.Register(b.router, b.api)
 	markdown.Register(b.router, b.api)
+
+	// New framework plugins
+	loglevel.Register(b.router, b.logger)
+	pkggrp.Register(b.router, pkggrp.BuildStatus(b.botStartTime, version.String(), func() string { return b.logger.Level() }))
+	blacklist.Register(b.router, b.blacklistMgr)
+	timer.Register(b.router, b.scheduler, b.logger)
 }
 
 // Run starts the bot and blocks until shutdown.
@@ -252,7 +346,7 @@ func (b *Bot) Run() error {
 		b.adminPanel.SetBotStatus(admin.BotStatus{
 			Running:   true,
 			Adapter:   true,
-			Database:  true,
+			Database:  b.storage.Driver(),
 			HTTPServe: b.httpSrv != nil,
 		})
 	}
@@ -455,18 +549,34 @@ func (b *Bot) processMessageEvent(eventType string, rawData json.RawMessage) {
 		}
 	})
 
-	// Run through middleware chain, then dispatch
-	_ = b.mwChain.Execute(eventCtx, func() error {
-		// Try command routing first
-		cmd, args := b.router.Resolve(eventCtx.Content())
-		if cmd != nil {
-			return b.executeCommand(cmd, args, eventCtx)
-		}
+	// Run through middleware chain with timeout, then dispatch
+	timeout := 30 * time.Second
+	mwCtx, mwCancel := context.WithTimeout(b.ctx, timeout)
+	defer mwCancel()
 
-		// Otherwise dispatch to event listeners
-		b.eventBus.Publish(b.ctx, eventType, eventCtx)
-		return nil
-	})
+	done := make(chan error, 1)
+	go func() {
+		done <- b.mwChain.Execute(eventCtx, func() error {
+			// Try command routing first
+			cmd, args := b.router.Resolve(eventCtx.Content())
+			if cmd != nil {
+				return b.executeCommand(cmd, args, eventCtx)
+			}
+
+			// Otherwise dispatch to event listeners
+			b.eventBus.Publish(b.ctx, eventType, eventCtx)
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			b.logger.Warn("event processing error", "error", err, "event_type", eventType)
+		}
+	case <-mwCtx.Done():
+		b.logger.Warn("event processing timed out", "event_type", eventType, "timeout", timeout)
+	}
 }
 
 // processGuildEvent handles guild/member events by forwarding to event bus.
@@ -540,7 +650,7 @@ func (b *Bot) processInteractionEvent(rawData json.RawMessage) {
 	b.eventBus.Publish(b.ctx, types.EventInteractionCreate, ictx)
 }
 
-// executeCommand runs a matched command with permission check.
+// executeCommand runs a matched command with permission check and timing.
 func (b *Bot) executeCommand(cmd *contract.Command, args []string, ctx contract.EventContext) error {
 	// Debug: log role info before permission check
 	b.logger.Debug("permission check",
@@ -568,7 +678,44 @@ func (b *Bot) executeCommand(cmd *contract.Command, args []string, ctx contract.
 		args:         args,
 		EventContext: ctx,
 	}
-	return cmd.Handler(cmdCtx)
+
+	// Command execution with timing and panic recovery
+	start := time.Now()
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic in command handler: %v", r)
+				b.logger.Error("command panic recovered",
+					"command", cmd.Name,
+					"panic", r,
+					"author_id", ctx.AuthorID(),
+				)
+			}
+		}()
+		err = cmd.Handler(cmdCtx)
+	}()
+	duration := time.Since(start)
+
+	// Track command count
+	_ = atomic.AddInt64(&b.cmdCount, 1)
+
+	// Log slow commands (>1s)
+	if duration > 1*time.Second {
+		b.logger.Warn("slow command",
+			"command", cmd.Name,
+			"duration", duration.String(),
+			"author_id", ctx.AuthorID(),
+			"scene", int(ctx.Scene()),
+		)
+	} else {
+		b.logger.Debug("command executed",
+			"command", cmd.Name,
+			"duration", duration.String(),
+		)
+	}
+
+	return err
 }
 
 // startLogCleanup starts a goroutine that periodically cleans up old log entries.
@@ -1220,13 +1367,17 @@ func (c *commandContextImpl) ArgCount() int { return len(c.args) }
 // ---
 
 type qqAPIImpl struct {
-	appID     string
-	appSecret string
-	sandbox   bool
-	logger    *framelog.Logger
-	api       openapi.OpenAPI
-	mu        sync.Mutex
+	appID       string
+	appSecret   string
+	sandbox     bool
+	logger      *framelog.Logger
+	api         openapi.OpenAPI
+	tokenSource oauth2.TokenSource
+	mu          sync.Mutex
 }
+
+// AppID returns the bot's App ID.
+func (a *qqAPIImpl) AppID() string { return a.appID }
 
 func (a *qqAPIImpl) initOpenAPI() {
 	if a.appID == "" || a.appID == "your_app_id_here" {
@@ -1242,6 +1393,7 @@ func (a *qqAPIImpl) initOpenAPI() {
 		AppSecret: a.appSecret,
 	}
 	tokenSource := token.NewQQBotTokenSource(credentials)
+	a.tokenSource = tokenSource
 	a.mu.Lock()
 	if a.sandbox {
 		a.api = botgo.NewSandboxOpenAPI(a.appID, tokenSource)
@@ -2020,157 +2172,104 @@ func (a *qqAPIImpl) GetGuildMember(guildID, userID string) (*contract.Member, er
 	return member, nil
 }
 
-// uploadChannelMediaUploadRequest is the request body for channel file upload.
-type uploadChannelMediaUploadRequest struct {
-	FileType   int    `json:"file_type"`
-	URL        string `json:"url"`
-	SrvSendMsg bool   `json:"srv_send_msg"`
+// uploadMediaRequest is the request body for media file upload (channel/group/C2C).
+type uploadMediaRequest struct {
+	FileType int    `json:"file_type"`
+	URL      string `json:"url"`
 }
 
-// uploadChannelMediaUploadResponse is the response body for channel file upload.
-type uploadChannelMediaUploadResponse struct {
+// uploadMediaResponse is the response body for media file upload.
+type uploadMediaResponse struct {
 	FileInfo string `json:"file_info"`
 }
 
-func (a *qqAPIImpl) UploadChannelMedia(channelID string, fileType int, url string) (string, error) {
-	api := a.getAPI()
-	if api == nil {
-		return "", nil
+// doUploadRequest makes a direct HTTP POST to the QQ API media upload endpoint,
+// bypassing botgo's resty Transport to get full visibility into HTTP status and body.
+func (a *qqAPIImpl) doUploadRequest(uploadURL string, fileType int, url string) (string, error) {
+	if a.tokenSource == nil {
+		return "", fmt.Errorf("upload: token source not initialized")
 	}
 
-	// Build the upload URL (base URL depends on sandbox mode)
+	// Get access token
+	tk, err := a.tokenSource.Token()
+	if err != nil {
+		return "", fmt.Errorf("upload: get token: %w", err)
+	}
+
+	// Build request body
+	body := &uploadMediaRequest{FileType: fileType, URL: url}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("upload: marshal body: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("upload: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", tk.TokenType+" "+tk.AccessToken)
+	req.Header.Set("X-Union-Appid", a.appID)
+
+	// Execute with timeout
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload: http do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("upload: read body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upload: HTTP %d, body: %s",
+			resp.StatusCode, string(respBody))
+	}
+
+	var result uploadMediaResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("upload: parse response: %w, body: %s", err, string(respBody))
+	}
+
+	if result.FileInfo == "" {
+		return "", fmt.Errorf("upload: empty file_info in response: %s", string(respBody))
+	}
+
+	return result.FileInfo, nil
+}
+
+// UploadChannelMedia uploads a media file to a channel and returns the file_info string.
+func (a *qqAPIImpl) UploadChannelMedia(channelID string, fileType int, url string) (string, error) {
 	baseURL := constant.APIDomain
 	if a.sandbox {
 		baseURL = constant.SandBoxAPIDomain
 	}
 	uploadURL := fmt.Sprintf("%s/channels/%s/files", baseURL, channelID)
-
-	body := &uploadChannelMediaUploadRequest{
-		FileType:   fileType,
-		URL:        url,
-		SrvSendMsg: false,
-	}
-
-	resp, err := api.Transport(context.TODO(), "POST", uploadURL, body)
-	if err != nil {
-		a.logger.Error("upload channel media failed", "error", err, "channel_id", channelID)
-		return "", err
-	}
-
-	var result uploadChannelMediaUploadResponse
-	if err := json.Unmarshal(resp, &result); err != nil {
-		a.logger.Error("upload channel media: parse response failed", "error", err)
-		return "", err
-	}
-
-	if result.FileInfo == "" {
-		return "", fmt.Errorf("upload channel media: empty file_info in response")
-	}
-
-	a.logger.Info("channel media uploaded",
-		"channel_id", channelID,
-		"file_type", fileType,
-	)
-
-	return result.FileInfo, nil
-}
-
-// uploadGroupMediaUploadRequest is the request body for group file upload.
-type uploadGroupMediaUploadRequest struct {
-	FileType   int    `json:"file_type"`
-	URL        string `json:"url"`
-	SrvSendMsg bool   `json:"srv_send_msg"`
-}
-
-// uploadGroupMediaUploadResponse is the response body for group file upload.
-type uploadGroupMediaUploadResponse struct {
-	FileInfo string `json:"file_info"`
+	return a.doUploadRequest(uploadURL, fileType, url)
 }
 
 // UploadGroupMedia uploads a media file to a group and returns the file_info string.
 func (a *qqAPIImpl) UploadGroupMedia(groupID string, fileType int, url string) (string, error) {
-	api := a.getAPI()
-	if api == nil {
-		return "", nil
-	}
-
 	baseURL := constant.APIDomain
 	if a.sandbox {
 		baseURL = constant.SandBoxAPIDomain
 	}
 	uploadURL := fmt.Sprintf("%s/v2/groups/%s/files", baseURL, groupID)
-
-	body := &uploadGroupMediaUploadRequest{
-		FileType:   fileType,
-		URL:        url,
-		SrvSendMsg: false,
-	}
-
-	resp, err := api.Transport(context.TODO(), "POST", uploadURL, body)
-	if err != nil {
-		a.logger.Error("upload group media failed", "error", err, "group_id", groupID)
-		return "", err
-	}
-
-	var result uploadGroupMediaUploadResponse
-	if err := json.Unmarshal(resp, &result); err != nil {
-		a.logger.Error("upload group media: parse response failed", "error", err)
-		return "", err
-	}
-
-	if result.FileInfo == "" {
-		return "", fmt.Errorf("upload group media: empty file_info in response")
-	}
-
-	a.logger.Info("group media uploaded",
-		"group_id", groupID,
-		"file_type", fileType,
-	)
-
-	return result.FileInfo, nil
+	return a.doUploadRequest(uploadURL, fileType, url)
 }
 
 // UploadC2CMedia uploads a media file for C2C and returns the file_info string.
 func (a *qqAPIImpl) UploadC2CMedia(userID string, fileType int, url string) (string, error) {
-	api := a.getAPI()
-	if api == nil {
-		return "", nil
-	}
-
 	baseURL := constant.APIDomain
 	if a.sandbox {
 		baseURL = constant.SandBoxAPIDomain
 	}
 	uploadURL := fmt.Sprintf("%s/v2/users/%s/files", baseURL, userID)
-
-	body := &uploadGroupMediaUploadRequest{
-		FileType:   fileType,
-		URL:        url,
-		SrvSendMsg: false,
-	}
-
-	resp, err := api.Transport(context.TODO(), "POST", uploadURL, body)
-	if err != nil {
-		a.logger.Error("upload c2c media failed", "error", err, "user_id", userID)
-		return "", err
-	}
-
-	var result uploadGroupMediaUploadResponse
-	if err := json.Unmarshal(resp, &result); err != nil {
-		a.logger.Error("upload c2c media: parse response failed", "error", err)
-		return "", err
-	}
-
-	if result.FileInfo == "" {
-		return "", fmt.Errorf("upload c2c media: empty file_info in response")
-	}
-
-	a.logger.Info("c2c media uploaded",
-		"user_id", userID,
-		"file_type", fileType,
-	)
-
-	return result.FileInfo, nil
+	return a.doUploadRequest(uploadURL, fileType, url)
 }
 
 func (a *qqAPIImpl) getAPI() openapi.OpenAPI {
