@@ -14,3 +14,9 @@ func getSystemMemoryGB() (float64, float64) { return 0, 0 }
 
 // getDiskFreeGB is not available on this platform.
 func getDiskFreeGB(string) (float64, float64) { return 0, 0 }
+
+// getAllDiskInfo is not available on this platform.
+func getAllDiskInfo() []diskInfo { return nil }
+
+// getNetworkIO is not available on this platform.
+func getNetworkIO() (uint64, uint64) { return 0, 0 }

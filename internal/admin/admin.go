@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -47,15 +48,15 @@ type BotStatus struct {
 
 // dashData is the data model passed to the dashboard template.
 type dashData struct {
-	Title       string
-	AppName     string
-	Version     string
-	Commit      string
-	BuildDate   string
-	Uptime      string
-	Today       *storage.DailyRecord
-	TotalUsers  int64
-	TotalGroups int64
+	Title          string
+	AppName        string
+	Version        string
+	Commit         string
+	BuildDate      string
+	Uptime         string
+	Today          *storage.DailyRecord
+	TotalUsers     int64
+	TotalGroups    int64
 	TotalChannels  int64
 	TotalChanUsers int64
 
@@ -73,10 +74,10 @@ type dashData struct {
 
 	// 7-day trend (feature 3)
 	TrendDaysCount int
-	TrendDays   []string
-	TrendIncoming []int64
-	TrendOutgoing []int64
-	TrendCmds   []int64
+	TrendDays      []string
+	TrendIncoming  []int64
+	TrendOutgoing  []int64
+	TrendCmds      []int64
 
 	// Active entities (feature 5)
 	ActiveUsers    []storage.UserRecord
@@ -87,14 +88,52 @@ type dashData struct {
 	SysMemUsed    uint64
 	SysMemTotal   uint64
 	SysGoroutines int
+	SysDiskUsed   float64
+	SysDiskTotal  float64
+
+	// Per-disk info
+	Disks []diskInfo
+
+	// Network I/O (total since boot, in bytes)
+	NetRX uint64
+	NetTX uint64
 
 	// DB info (feature 8)
-	DBPath      string
-	DBFileSize  int64
-	DBLogCount  int64
-	DBUserCount int64
+	DBPath       string
+	DBFileSize   int64
+	DBLogCount   int64
+	DBUserCount  int64
 	DBGroupCount int64
-	DBChanCount int64
+	DBChanCount  int64
+}
+
+// diskInfo holds usage for a single disk/mount point.
+type diskInfo struct {
+	MountPoint string  `json:"mp"`
+	UsedGB     float64 `json:"u"`
+	TotalGB    float64 `json:"t"`
+	Percent    float64 `json:"p"`
+}
+
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	abs := t.Format("01-02 15:04:05")
+	if d < 10*time.Second {
+		return abs + " (刚刚)"
+	}
+	if d < 60*time.Second {
+		return fmt.Sprintf("%s (%d秒前)", abs, int(d.Seconds()))
+	}
+	if d < 60*time.Minute {
+		return fmt.Sprintf("%s (%d分钟前)", abs, int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%s (%d小时前)", abs, int(d.Hours()))
+	}
+	if d < 30*24*time.Hour {
+		return fmt.Sprintf("%s (%d天前)", abs, int(d.Hours()/24))
+	}
+	return abs
 }
 
 type cmdInfo struct {
@@ -118,7 +157,7 @@ type Admin struct {
 	statusMu sync.RWMutex
 	status   BotStatus
 
-	commands    []contract.Command
+	commands []contract.Command
 
 	// SSE clients
 	sseClients   map[string]chan string
@@ -126,6 +165,13 @@ type Admin struct {
 
 	// Trend chart days (set from URL param, used by SSE)
 	trendDays int
+
+	// Network rate tracking
+	lastNetRX   uint64
+	lastNetTX   uint64
+	lastNetTime time.Time
+	totalNetRX  uint64
+	totalNetTX  uint64
 
 	// Restart function
 	restartFn func() error
@@ -367,11 +413,11 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	a.statusMu.RUnlock()
 
 	data := dashData{
-		AppName:   a.version.App,
-		Version:   a.version.Version,
-		Commit:    a.version.Commit,
-		BuildDate: a.version.Date,
-		Uptime:    formatDuration(time.Since(a.startedAt)),
+		AppName:      a.version.App,
+		Version:      a.version.Version,
+		Commit:       a.version.Commit,
+		BuildDate:    a.version.Date,
+		Uptime:       formatDuration(time.Since(a.startedAt)),
 		BotRunning:   status.Running,
 		BotAdapter:   status.Adapter,
 		BotDatabase:  status.Database,
@@ -469,6 +515,18 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data.SysMemUsed = m.Alloc
 	data.SysMemTotal = m.Sys
 	data.SysGoroutines = runtime.NumGoroutine()
+	disks := getAllDiskInfo()
+	data.Disks = disks
+	var totalUsed, totalCap float64
+	for _, d := range disks {
+		totalUsed += d.UsedGB
+		totalCap += d.TotalGB
+	}
+	data.SysDiskUsed = totalUsed
+	data.SysDiskTotal = totalCap
+	netRX, netTX := getNetworkIO()
+	data.NetRX = netRX
+	data.NetTX = netTX
 
 	// 8. DB info
 	dbPath := a.store.DSN()
@@ -496,21 +554,78 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // resourceSnapshot holds real-time system resource values pushed via SSE.
 type resourceSnapshot struct {
-	SysMem      string `json:"mem"`
-	SysCPU      string `json:"scpu"`
-	ProcCPU     string `json:"pcpu"`
-	ProcMem     string `json:"pmem"`
-	Gor         string `json:"gor"`
-	Uptime      string `json:"ut"`
-	BotRunning  bool   `json:"br"`
-	BotAdapter  bool   `json:"ba"`
-	BotDatabase bool   `json:"bd"`
+	SysMem      string     `json:"mem"`
+	SysCPU      string     `json:"scpu"`
+	ProcCPU     string     `json:"pcpu"`
+	ProcMem     string     `json:"pmem"`
+	Gor         string     `json:"gor"`
+	Disk        string     `json:"disk"`
+	Disks       []diskInfo `json:"disks,omitempty"`
+	Net         string     `json:"net"`
+	NetUp       string     `json:"netup"`
+	NetTotal    string     `json:"nett"`
+	Uptime      string     `json:"ut"`
+	BotRunning  bool       `json:"br"`
+	BotAdapter  bool       `json:"ba"`
+	BotDatabase bool       `json:"bd"`
 }
 
-func (a *Admin) collectSnapshot() resourceSnapshot {
+func (a *Admin) collectSnapshot() (snap resourceSnapshot) {
+	defer func() {
+		if r := recover(); r != nil {
+			if a.logger != nil {
+				a.logger.Error("collectSnapshot recovered from panic", "panic", fmt.Sprintf("%v", r))
+			} else {
+				fmt.Fprintf(os.Stderr, "collectSnapshot panic: %v\n", r)
+			}
+		}
+	}()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	sysMemUsed, sysMemTotal := getSystemMemoryGB()
+	disks := getAllDiskInfo()
+	var totalUsed, totalCap float64
+	for _, d := range disks {
+		totalUsed += d.UsedGB
+		totalCap += d.TotalGB
+	}
+	// Network rate from delta
+	now := time.Now()
+	netRX, netTX := getNetworkIO()
+	var netStr string
+	var netUpStr string
+	if a.lastNetTime.IsZero() {
+		a.totalNetRX = netRX
+		a.totalNetTX = netTX
+		netStr = formatBytes(netRX) + " / " + formatBytes(netTX)
+		netUpStr = ""
+	} else {
+		elapsed := now.Sub(a.lastNetTime).Seconds()
+		if elapsed > 0 {
+			// Handle uint32 counter wrapping
+			deltaRX := netRX - a.lastNetRX
+			if netRX < a.lastNetRX {
+				deltaRX = (uint64(math.MaxUint32) - a.lastNetRX) + netRX + 1
+			}
+			deltaTX := netTX - a.lastNetTX
+			if netTX < a.lastNetTX {
+				deltaTX = (uint64(math.MaxUint32) - a.lastNetTX) + netTX + 1
+			}
+			a.totalNetRX += deltaRX
+			a.totalNetTX += deltaTX
+			rxRate := float64(deltaRX) / elapsed
+			txRate := float64(deltaTX) / elapsed
+			netStr = "↓ " + formatRate(rxRate)
+			netUpStr = "↑ " + formatRate(txRate)
+		} else {
+			netStr = "0"
+			netUpStr = ""
+		}
+	}
+	a.lastNetRX = netRX
+	a.lastNetTX = netTX
+	a.lastNetTime = now
+
 	a.statusMu.RLock()
 	s := a.status
 	a.statusMu.RUnlock()
@@ -520,6 +635,11 @@ func (a *Admin) collectSnapshot() resourceSnapshot {
 		ProcCPU:     fmt.Sprintf("%.1f%%", getProcessCPUUsage()),
 		ProcMem:     fmt.Sprintf("%.1f MB", float64(m.Alloc)/1024/1024),
 		Gor:         fmt.Sprintf("%d", runtime.NumGoroutine()),
+		Disk:        fmt.Sprintf("%.1f / %.1f GB", totalUsed, totalCap),
+		Disks:       disks,
+		Net:         netStr,
+		NetUp:       netUpStr,
+		NetTotal:    formatBytes(a.totalNetRX) + " / " + formatBytes(a.totalNetTX),
 		Uptime:      formatDuration(time.Since(a.startedAt)),
 		BotRunning:  s.Running,
 		BotAdapter:  s.Adapter,
@@ -529,17 +649,17 @@ func (a *Admin) collectSnapshot() resourceSnapshot {
 
 // todayStats holds today's statistics pushed via SSE.
 type todayStats struct {
-	C2CIn      string `json:"c2c_in"`
-	C2COut     string `json:"c2c_out"`
-	GroupIn    string `json:"grp_in"`
-	GroupOut   string `json:"grp_out"`
-	ChanIn     string `json:"ch_in"`
-	ChanOut    string `json:"ch_out"`
-	Cmds       string `json:"cmds"`
-	Interact   string `json:"interact"`
-	C2CUsers   string `json:"c2c_u"`
-	GroupAct   string `json:"grp_a"`
-	ChanAct    string `json:"ch_a"`
+	C2CIn    string `json:"c2c_in"`
+	C2COut   string `json:"c2c_out"`
+	GroupIn  string `json:"grp_in"`
+	GroupOut string `json:"grp_out"`
+	ChanIn   string `json:"ch_in"`
+	ChanOut  string `json:"ch_out"`
+	Cmds     string `json:"cmds"`
+	Interact string `json:"interact"`
+	C2CUsers string `json:"c2c_u"`
+	GroupAct string `json:"grp_a"`
+	ChanAct  string `json:"ch_a"`
 }
 
 func (a *Admin) collectTodayStats() todayStats {
@@ -629,6 +749,50 @@ func (a *Admin) collectDBInfo() dbSnapshot {
 	return sn
 }
 
+// entitiesSnapshot holds active entities pushed via SSE.
+type entitiesSnapshot struct {
+	Users    []entityItem `json:"users,omitempty"`
+	Groups   []entityItem `json:"groups,omitempty"`
+	Channels []entityItem `json:"channels,omitempty"`
+}
+
+type entityItem struct {
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	Msg   int64  `json:"msg"`
+	Scene string `json:"scene,omitempty"`
+	Last  string `json:"last"`
+}
+
+func (a *Admin) collectEntities() entitiesSnapshot {
+	users, err := a.store.QueryUsers(8, 0)
+	var es entitiesSnapshot
+	if err == nil {
+		for _, u := range users {
+			es.Users = append(es.Users, entityItem{
+				ID: u.UserID, Name: u.Username, Msg: u.MessageCount, Scene: u.Scene, Last: relativeTime(u.LastSeenAt),
+			})
+		}
+	}
+	groups, err := a.store.QueryGroups(8, 0)
+	if err == nil {
+		for _, g := range groups {
+			es.Groups = append(es.Groups, entityItem{
+				ID: g.GroupID, Msg: g.MessageCount, Last: relativeTime(g.LastSeenAt),
+			})
+		}
+	}
+	chans, err := a.store.QueryChannels(8, 0)
+	if err == nil {
+		for _, c := range chans {
+			es.Channels = append(es.Channels, entityItem{
+				ID: c.ChannelID, Msg: c.MessageCount, Last: relativeTime(c.LastSeenAt),
+			})
+		}
+	}
+	return es
+}
+
 func (a *Admin) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -672,6 +836,10 @@ func (a *Admin) handleSSE(w http.ResponseWriter, r *http.Request) {
 	di := a.collectDBInfo()
 	diJSON, _ := json.Marshal(di)
 	fmt.Fprintf(w, "data: {\"t\":\"db\",\"d\":%s}\n\n", diJSON)
+	// Send initial entities snapshot
+	es := a.collectEntities()
+	esJSON, _ := json.Marshal(es)
+	fmt.Fprintf(w, "data: {\"t\":\"entities\",\"d\":%s}\n\n", esJSON)
 	flusher.Flush()
 
 	// Track last pushed log ID for incremental log pushing
@@ -685,7 +853,7 @@ func (a *Admin) handleSSE(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 
 	// Cached previous values — only push on actual change
-	var prevResource, prevToday, prevTrend, prevDB string
+	var prevResource, prevToday, prevTrend, prevDB, prevEntities string
 
 	ctx := r.Context()
 	for {
@@ -729,16 +897,25 @@ func (a *Admin) handleSSE(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "data: {\"t\":\"db\",\"d\":%s}\n\n", diJSON)
 			}
 
+			// Entities snapshot
+			es := a.collectEntities()
+			esJSON, _ := json.Marshal(es)
+			esStr := string(esJSON)
+			if esStr != prevEntities {
+				prevEntities = esStr
+				fmt.Fprintf(w, "data: {\"t\":\"entities\",\"d\":%s}\n\n", esJSON)
+			}
+
 			// New logs since last push (query up to 10 at a time)
 			if newLogs, err := a.store.QueryLogsSince(lastLogID, 10); err == nil && len(newLogs) > 0 {
 				lastLogID = newLogs[len(newLogs)-1].ID
 				type logItem struct {
-					ID    uint   `json:"id"`
-					Level string `json:"level"`
-					Time  string `json:"time"`
-					Msg   string `json:"msg"`
+					ID     uint   `json:"id"`
+					Level  string `json:"level"`
+					Time   string `json:"time"`
+					Msg    string `json:"msg"`
 					Source string `json:"src"`
-					Event string `json:"evt"`
+					Event  string `json:"evt"`
 				}
 				items := make([]logItem, len(newLogs))
 				for i, l := range newLogs {
@@ -942,16 +1119,26 @@ a{color:#1a1a1a;text-decoration:none} a:hover{opacity:0.7}
 .chart-legend .leg-outgoing::before{background:#d4d4d4}
 .chart-legend .leg-cmds::before{background:#999}
 /* Active entities */
+.entity-scroll{overflow-y:auto;max-height:230px}
 .entity-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .entity-tbl th{text-align:left;padding:6px;border-bottom:1px solid #e5e5e5;font-weight:600;color:#555}
 .entity-tbl td{padding:6px;border-bottom:1px solid #f0f0f0;color:#333}
 .entity-tbl tr:hover td{background:#fafafa}
-.entity-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.entity-grid{display:grid;grid-template-columns:1fr;gap:12px}
 /* System resources */
-.res-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.res-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;align-items:start}
 .res-card{padding:14px;border:1px solid #e5e5e5;border-radius:6px;text-align:center}
 .res-card .res-val{font-size:18px;font-weight:600}
 .res-card .res-lbl{font-size:11px;color:#888;margin-top:2px}
+/* Disk list inside res-card */
+.dc{padding-bottom:8px}
+.dl{margin-top:6px;font-size:10px;text-align:left;max-height:100px;overflow-y:auto}
+.dr{display:flex;align-items:center;gap:4px;padding:1px 0;overflow:hidden}
+.dn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1;min-width:0;color:#555;font-weight:500}
+.ds{flex-shrink:0;white-space:nowrap;text-align:right;color:#888;margin-left:auto}
+/* Sub-value inside res-card */
+.res-subval{font-size:9px;color:#aaa;margin-top:-2px;margin-bottom:2px;line-height:1.3}
+#net-up{font-size:14px;color:#888;margin-bottom:1px}
 /* Actions bar */
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
 /* Tab system for logs/commands/entities */
@@ -1052,6 +1239,26 @@ func renderDashboard(w io.Writer, d dashData) {
 	writeResCard(w, fmt.Sprintf("%.1f%%", procCpuPct), "进程CPU")
 	writeResCard(w, resMem, "进程内存")
 	writeResCard(w, resGor, "Goroutine")
+	// Multi-disk card
+	w.Write([]byte("<div class=\"res-card dc\" id=\"disk-card\">\n"))
+	w.Write([]byte(fmt.Sprintf("  <div class=\"res-val\" id=\"disk-total\">%.1f / %.1f GB</div>\n", d.SysDiskUsed, d.SysDiskTotal)))
+	w.Write([]byte("  <div class=\"res-lbl\">磁盘</div>\n"))
+	if len(d.Disks) > 0 {
+		w.Write([]byte("  <div class=\"dl\" id=\"disk-list\">\n"))
+		for _, disk := range d.Disks {
+			w.Write([]byte(fmt.Sprintf("    <div class=\"dr\" data-mount=%[1]q><span class=\"dn\" title=%[1]q>%[1]s</span><span class=\"ds\">%.1f / %.1f GB</span></div>\n",
+				disk.MountPoint, disk.UsedGB, disk.TotalGB)))
+		}
+		w.Write([]byte("  </div>\n"))
+	}
+	w.Write([]byte("</div>\n"))
+	// Network I/O card
+	w.Write([]byte("<div class=\"res-card\">\n"))
+	w.Write([]byte(fmt.Sprintf("  <div class=\"res-val\" id=\"net-rate\">%s</div>\n", template.HTMLEscapeString(formatBytes(d.NetRX)+" / "+formatBytes(d.NetTX)))))
+	w.Write([]byte(fmt.Sprintf("  <div class=\"res-subval\" id=\"net-up\">%s</div>\n", "")))
+	w.Write([]byte(fmt.Sprintf("  <div class=\"res-subval\" id=\"net-total\">总 %s</div>\n", template.HTMLEscapeString(formatBytes(d.NetRX)+" / "+formatBytes(d.NetTX)))))
+	w.Write([]byte("  <div class=\"res-lbl\">网络</div>\n"))
+	w.Write([]byte("</div>\n"))
 	w.Write([]byte("</div>\n"))
 	w.Write([]byte("</div>\n"))
 
@@ -1097,6 +1304,7 @@ func renderDashboard(w io.Writer, d dashData) {
 		}
 		w.Write([]byte("</div>\n"))
 		w.Write([]byte("<div class=\"chart-legend\" id=\"trend-legend\"><span class=\"leg-incoming\">上行</span><span class=\"leg-outgoing\">下行</span><span class=\"leg-cmds\">指令</span></div>\n"))
+		w.Write([]byte("<div class=\"ctip\" id=\"chart-tt\"></div>\n"))
 		w.Write([]byte("<div class=\"chart-wrap\" id=\"trend-chart-wrap\">\n"))
 
 		maxVal := int64(1)
@@ -1222,7 +1430,7 @@ func renderDashboard(w io.Writer, d dashData) {
 	// Tab: Commands
 	w.Write([]byte("<div id=\"tab-cmds\" class=\"tab-panel\">\n"))
 	if len(d.Commands) > 0 {
-		w.Write([]byte("<div class=\"cmd-grid\">\n"))
+		w.Write([]byte("<div style=\"max-height:450px;overflow-y:auto\">\n<div class=\"cmd-grid\">\n"))
 		for _, c := range d.Commands {
 			usage := ""
 			if c.Usage != "" && c.Usage != c.Name {
@@ -1235,7 +1443,7 @@ func renderDashboard(w io.Writer, d dashData) {
 			w.Write([]byte(fmt.Sprintf("  <div class=\"cmd-card\"><div class=\"cmd-name\">/%s</div><div class=\"cmd-desc\">%s</div><div class=\"cmd-usage\">用法: %s &nbsp; 别名: %s</div><div class=\"cmd-perm\">%s</div></div>\n",
 				c.Name, c.Description, usage, aliases, c.Permission)))
 		}
-		w.Write([]byte("</div>\n"))
+		w.Write([]byte("</div>\n</div>\n"))
 	} else {
 		w.Write([]byte("<p style=\"font-size:13px;color:#999\">暂无注册指令</p>\n"))
 	}
@@ -1246,18 +1454,16 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("<div class=\"entity-grid\">\n"))
 
 	// Users
-	w.Write([]byte("<div><h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃用户</h4>\n"))
+	w.Write([]byte("<h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃用户</h4>\n"))
+	w.Write([]byte("<div class=\"entity-scroll\" id=\"entities-users\">\n"))
 	if len(d.ActiveUsers) > 0 {
-		w.Write([]byte("<table class=\"entity-tbl\"><thead><tr><th>用户</th><th>消息数</th><th>场景</th><th>最近</th></tr></thead><tbody>\n"))
+		w.Write([]byte("<table class=\"entity-tbl\"><thead><tr><th>用户</th><th>名称</th><th>消息数</th><th>场景</th><th>最近</th></tr></thead><tbody>\n"))
 		for _, u := range d.ActiveUsers {
 			fullID := template.HTMLEscapeString(u.UserID)
-			uid := fullID
-			if len(uid) > 12 {
-				uid = uid[:12] + "…"
-			}
-			last := u.LastSeenAt.Format("01-02 15:04")
-			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%d</td><td>%s</td><td>%s</td></tr>\n",
-				fullID, uid, u.MessageCount, u.Scene, last)))
+			name := template.HTMLEscapeString(u.Username)
+			last := relativeTime(u.LastSeenAt)
+			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>\n",
+				fullID, fullID, name, u.MessageCount, u.Scene, last)))
 		}
 		w.Write([]byte("</tbody></table>\n"))
 	} else {
@@ -1266,17 +1472,14 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("</div>\n"))
 
 	// Groups
-	w.Write([]byte("<div><h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃群聊</h4>\n"))
+	w.Write([]byte("<h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃群聊</h4>\n"))
+	w.Write([]byte("<div class=\"entity-scroll\" id=\"entities-groups\">\n"))
 	if len(d.ActiveGroups) > 0 {
 		w.Write([]byte("<table class=\"entity-tbl\"><thead><tr><th>群</th><th>消息数</th><th>最近</th></tr></thead><tbody>\n"))
 		for _, g := range d.ActiveGroups {
 			fullGID := template.HTMLEscapeString(g.GroupID)
-			gid := fullGID
-			if len(gid) > 12 {
-				gid = gid[:12] + "…"
-			}
-			last := g.LastSeenAt.Format("01-02 15:04")
-			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%d</td><td>%s</td></tr>\n", fullGID, gid, g.MessageCount, last)))
+			last := relativeTime(g.LastSeenAt)
+			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%d</td><td>%s</td></tr>\n", fullGID, fullGID, g.MessageCount, last)))
 		}
 		w.Write([]byte("</tbody></table>\n"))
 	} else {
@@ -1285,17 +1488,14 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("</div>\n"))
 
 	// Channels
-	w.Write([]byte("<div><h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃频道</h4>\n"))
+	w.Write([]byte("<h4 style=\"font-size:12px;font-weight:600;margin-bottom:6px;color:#555\">最近活跃频道</h4>\n"))
+	w.Write([]byte("<div class=\"entity-scroll\" id=\"entities-channels\">\n"))
 	if len(d.ActiveChannels) > 0 {
 		w.Write([]byte("<table class=\"entity-tbl\"><thead><tr><th>频道</th><th>消息数</th><th>最近</th></tr></thead><tbody>\n"))
 		for _, c := range d.ActiveChannels {
 			fullCID := template.HTMLEscapeString(c.ChannelID)
-			cid := fullCID
-			if len(cid) > 12 {
-				cid = cid[:12] + "…"
-			}
-			last := c.LastSeenAt.Format("01-02 15:04")
-			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%d</td><td>%s</td></tr>\n", fullCID, cid, c.MessageCount, last)))
+			last := relativeTime(c.LastSeenAt)
+			w.Write([]byte(fmt.Sprintf("<tr><td title=\"%s\">%s</td><td>%d</td><td>%s</td></tr>\n", fullCID, fullCID, c.MessageCount, last)))
 		}
 		w.Write([]byte("</tbody></table>\n"))
 	} else {
@@ -1306,8 +1506,6 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("</div>\n")) // entity-grid
 	w.Write([]byte("</div>\n")) // tab
 	w.Write([]byte("</div>\n")) // section
-
-
 
 	// ---- 8. DB Info (feature 8) ----
 	w.Write([]byte("<div class=\"section\">\n  <h3>数据库信息</h3>\n"))
@@ -1348,59 +1546,76 @@ func renderDashboard(w io.Writer, d dashData) {
 	w.Write([]byte("var sse=null;var sseBtn=document.getElementById('sse-btn');\n"))
 	w.Write([]byte("function statusHTML(ok,okLabel,failLabel){return ok?'<span style=\"color:#16a34a\">\u25CF '+okLabel+'</span>':'<span style=\"color:#999\">\u25CB '+failLabel+'</span>'}\n"))
 	w.Write([]byte("function updateResourceCards(d){\n  var nums=document.querySelectorAll('.res-grid .res-val');\n"))
-	w.Write([]byte("  if(nums.length>=5){nums[0].textContent=d.mem;nums[1].textContent=d.scpu;nums[2].textContent=d.pcpu;nums[3].textContent=d.pmem;nums[4].textContent=d.gor}\n"))
+	w.Write([]byte("  if(nums.length>=7){nums[0].textContent=d.mem;nums[1].textContent=d.scpu;nums[2].textContent=d.pcpu;nums[3].textContent=d.pmem;nums[4].textContent=d.gor;nums[5].textContent=d.disk;nums[6].textContent=d.net}\n"))
 	w.Write([]byte("  var ut=document.getElementById('info-uptime');if(ut)ut.textContent=d.ut;\n"))
 	w.Write([]byte("  var st=document.getElementById('info-status');if(st)st.innerHTML=statusHTML(d.br,'\u6B63\u5E38','\u542F\u52A8\u4E2D');\n"))
 	w.Write([]byte("  var ad=document.getElementById('info-adapter');if(ad)ad.innerHTML=statusHTML(d.ba,'\u5DF2\u8FDE\u63A5','\u672A\u8FDE\u63A5');\n"))
 	w.Write([]byte("  var db=document.getElementById('info-db');if(db)db.innerHTML=statusHTML(d.bd,'\u5DF2\u8FDE\u63A5','\u672A\u8FDE\u63A5');\n"))
-w.Write([]byte("}\n"))
-w.Write([]byte("function updateTodayCards(d){\n"))
-w.Write([]byte("  var nums=document.querySelectorAll('#today-grid .num');\n"))
-w.Write([]byte("  if(nums.length>=8){nums[0].textContent=d.c2c_in;nums[1].textContent=d.c2c_out;nums[2].textContent=d.grp_in;nums[3].textContent=d.grp_out;nums[4].textContent=d.ch_in;nums[5].textContent=d.ch_out;nums[6].textContent=d.cmds;nums[7].textContent=d.interact}\n"))
-w.Write([]byte("  var subs=document.querySelectorAll('#today-grid .sub');\n"))
-w.Write([]byte("  if(subs.length>=3){subs[0].textContent=d.c2c_u+'\u6D3B\u8DC3\u7528\u6237';subs[1].textContent=d.grp_a+'\u6D3B\u8DC3\u7FA4';subs[2].textContent=d.ch_a+'\u9891\u9053'}\n"))
-w.Write([]byte("}\n"))
-w.Write([]byte("function updateDBCards(d){\n"))
-w.Write([]byte("  var nums=document.querySelectorAll('#db-grid .res-val');\n"))
-w.Write([]byte("  if(nums.length>=5){nums[0].textContent=d.fs;nums[1].textContent=d.logs;nums[2].textContent=d.users;nums[3].textContent=d.grps;nums[4].textContent=d.chans}\n"))
-w.Write([]byte("}\n"))
-w.Write([]byte("function updateTrendChart(d){\n"))
-w.Write([]byte("  var wrap=document.getElementById('trend-chart-wrap');if(!wrap)return;\n"))
-w.Write([]byte("  var days=d.days||[];var inc=d.inc||[];var out=d.out||[];var cmd=d.cmd||[];\n"))
-w.Write([]byte("  var maxVal=1;\n"))
-w.Write([]byte("  for(var i=0;i<inc.length;i++){if(inc[i]>maxVal)maxVal=inc[i]}\n"))
-w.Write([]byte("  for(var i=0;i<out.length;i++){if(out[i]>maxVal)maxVal=out[i]}\n"))
-w.Write([]byte("  for(var i=0;i<cmd.length;i++){if(cmd[i]>maxVal)maxVal=cmd[i]}\n"))
-w.Write([]byte("  var labelStep=1;if(days.length>14)labelStep=2;if(days.length>28)labelStep=4;\n"))
-w.Write([]byte("  var html='';\n"))
-w.Write([]byte("  for(var i=0;i<days.length;i++){\n"))
-w.Write([]byte("    var incV=inc[i]||0;var outV=out[i]||0;var cmdV=cmd[i]||0;\n"))
-w.Write([]byte("    var incH=2;var outH=2;var cmdH=2;\n"))
-w.Write([]byte("    if(maxVal>0){\n"))
-w.Write([]byte("      incH=Math.max(2,Math.round(incV*100/maxVal));\n"))
-w.Write([]byte("      outH=Math.max(2,Math.round(outV*100/maxVal));\n"))
-w.Write([]byte("      cmdH=Math.max(2,Math.round(cmdV*100/maxVal));\n"))
-w.Write([]byte("    }\n"))
-w.Write([]byte("    var label=days[i];\n"))
-w.Write([]byte("    if(labelStep>1&&i%labelStep!==0&&i!==days.length-1)label='';\n"))
-w.Write([]byte("    var title=days[i]+' | 上行:'+incV+' 下行:'+outV+' 指令:'+cmdV;\n"))
-w.Write([]byte("    html+='<div class=\"chart-bar\" title=\"'+title+'\"><div class=\"chart-bar-group\"><div class=\"chart-bar-inner incoming\" title=\"上行:'+incV+'\" style=\"height:'+incH+'px\"></div><div class=\"chart-bar-inner outgoing\" title=\"下行:'+outV+'\" style=\"height:'+outH+'px\"></div><div class=\"chart-bar-inner cmds\" title=\"指令:'+cmdV+'\" style=\"height:'+cmdH+'px\"></div></div><div class=\"chart-label\">'+label+'</div></div>';\n"))
-w.Write([]byte("  }\n"))
-w.Write([]byte("  wrap.innerHTML=html;\n"))
-w.Write([]byte("  // Update mini totals\n"))
-w.Write([]byte("  var mini=document.getElementById('trend-mini-cards');\n"))
-w.Write([]byte("  if(mini){\n"))
-w.Write([]byte("    var totalInc=0,totalOut=0,totalCmd=0;\n"))
-w.Write([]byte("    for(var i=0;i<inc.length;i++)totalInc+=inc[i];\n"))
-w.Write([]byte("    for(var i=0;i<out.length;i++)totalOut+=out[i];\n"))
-w.Write([]byte("    for(var i=0;i<cmd.length;i++)totalCmd+=cmd[i];\n"))
-w.Write([]byte("    var items=mini.querySelectorAll('.tm-val');\n"))
-w.Write([]byte("    if(items.length>=3){items[0].textContent=totalInc;items[1].textContent=totalOut;items[2].textContent=totalCmd}\n"))
-w.Write([]byte("    var lbls=mini.querySelectorAll('.tm-lbl');\n"))
-w.Write([]byte("    if(lbls.length>=3){lbls[0].textContent=d.cnt+'\u65E5\u4E0A\u884C\u603B\u91CF';lbls[1].textContent=d.cnt+'\u65E5\u4E0B\u884C\u603B\u91CF';lbls[2].textContent=d.cnt+'\u65E5\u6307\u4EE4\u603B\u91CF'}\n"))
-w.Write([]byte("  }\n"))
-w.Write([]byte("}\n"))
-w.Write([]byte("function connectSSE(){\n"))
+	w.Write([]byte("  // Update disk list\n  var list=document.getElementById('disk-list');\n"))
+	w.Write([]byte("  if(list&&d.disks&&d.disks.length>0){\n    var html='';\n"))
+	w.Write([]byte("    for(var i=0;i<d.disks.length;i++){\n      var disk=d.disks[i];\n"))
+	w.Write([]byte("      html+='<div class=\"dr\" data-mount=\"'+disk.mp+'\"><span class=\"dn\" title=\"'+disk.mp+'\">'+disk.mp+'</span><span class=\"ds\">'+disk.u.toFixed(1)+' / '+disk.t.toFixed(1)+' GB</span></div>';\n"))
+	w.Write([]byte("    }\n    list.innerHTML=html;\n  }\n"))
+	w.Write([]byte("  var nt=document.getElementById('net-total');if(nt&&d.nett)nt.textContent='\u603B '+d.nett;\n"))
+	w.Write([]byte("  var nu=document.getElementById('net-up');if(nu&&d.netup)nu.textContent=d.netup;\n"))
+	w.Write([]byte("}\n"))
+	w.Write([]byte("function updateTodayCards(d){\n"))
+	w.Write([]byte("  var nums=document.querySelectorAll('#today-grid .num');\n"))
+	w.Write([]byte("  if(nums.length>=8){nums[0].textContent=d.c2c_in;nums[1].textContent=d.c2c_out;nums[2].textContent=d.grp_in;nums[3].textContent=d.grp_out;nums[4].textContent=d.ch_in;nums[5].textContent=d.ch_out;nums[6].textContent=d.cmds;nums[7].textContent=d.interact}\n"))
+	w.Write([]byte("  var subs=document.querySelectorAll('#today-grid .sub');\n"))
+	w.Write([]byte("  if(subs.length>=3){subs[0].textContent=d.c2c_u+'\u6D3B\u8DC3\u7528\u6237';subs[1].textContent=d.grp_a+'\u6D3B\u8DC3\u7FA4';subs[2].textContent=d.ch_a+'\u9891\u9053'}\n"))
+	w.Write([]byte("}\n"))
+	w.Write([]byte("function updateDBCards(d){\n"))
+	w.Write([]byte("  var nums=document.querySelectorAll('#db-grid .res-val');\n"))
+	w.Write([]byte("  if(nums.length>=5){nums[0].textContent=d.fs;nums[1].textContent=d.logs;nums[2].textContent=d.users;nums[3].textContent=d.grps;nums[4].textContent=d.chans}\n"))
+	w.Write([]byte("}\n"))
+	w.Write([]byte("function updateEntities(d){\n"))
+	w.Write([]byte("  function buildTable(rows,hasScene,label){\n    if(!rows||rows.length===0)return '<p style=\"font-size:11px;color:#999\">\u6682\u65E0\u6570\u636E</p>';\n    var html='<table class=\"entity-tbl\"><thead><tr><th>'+label+'</th>'+(hasScene?'<th>\u540D\u79F0</th>':'')+(hasScene?'<th>\u6D88\u606F\u6570</th><th>\u573A\u666F</th><th>\u6700\u8FD1</th>':'<th>\u6D88\u606F\u6570</th><th>\u6700\u8FD1</th>')+'</tr></thead><tbody>';\n"))
+	w.Write([]byte("    for(var i=0;i<rows.length;i++){\n      var r=rows[i];\n"))
+	w.Write([]byte("      if(hasScene)html+='<tr><td>'+r.id+'</td><td>'+(r.name||'')+'</td><td>'+r.msg+'</td><td>'+r.scene+'</td><td>'+r.last+'</td></tr>';\n"))
+	w.Write([]byte("      else html+='<tr><td>'+r.id+'</td><td>'+r.msg+'</td><td>'+r.last+'</td></tr>';\n"))
+	w.Write([]byte("    }\n    html+='</tbody></table>';\n    return html;\n  }\n"))
+	w.Write([]byte("  var ue=document.getElementById('entities-users');if(ue)ue.innerHTML=buildTable(d.users,true,'\u7528\u6237');\n"))
+	w.Write([]byte("  var ge=document.getElementById('entities-groups');if(ge)ge.innerHTML=buildTable(d.groups,false,'\u7FA4');\n"))
+	w.Write([]byte("  var ce=document.getElementById('entities-channels');if(ce)ce.innerHTML=buildTable(d.channels,false,'\u9891\u9053');\n"))
+	w.Write([]byte("}\n"))
+	w.Write([]byte("function updateTrendChart(d){\n"))
+	w.Write([]byte("  var wrap=document.getElementById('trend-chart-wrap');if(!wrap)return;\n"))
+	w.Write([]byte("  var days=d.days||[];var inc=d.inc||[];var out=d.out||[];var cmd=d.cmd||[];\n"))
+	w.Write([]byte("  var maxVal=1;\n"))
+	w.Write([]byte("  for(var i=0;i<inc.length;i++){if(inc[i]>maxVal)maxVal=inc[i]}\n"))
+	w.Write([]byte("  for(var i=0;i<out.length;i++){if(out[i]>maxVal)maxVal=out[i]}\n"))
+	w.Write([]byte("  for(var i=0;i<cmd.length;i++){if(cmd[i]>maxVal)maxVal=cmd[i]}\n"))
+	w.Write([]byte("  var labelStep=1;if(days.length>14)labelStep=2;if(days.length>28)labelStep=4;\n"))
+	w.Write([]byte("  var html='';\n"))
+	w.Write([]byte("  for(var i=0;i<days.length;i++){\n"))
+	w.Write([]byte("    var incV=inc[i]||0;var outV=out[i]||0;var cmdV=cmd[i]||0;\n"))
+	w.Write([]byte("    var incH=2;var outH=2;var cmdH=2;\n"))
+	w.Write([]byte("    if(maxVal>0){\n"))
+	w.Write([]byte("      incH=Math.max(2,Math.round(incV*100/maxVal));\n"))
+	w.Write([]byte("      outH=Math.max(2,Math.round(outV*100/maxVal));\n"))
+	w.Write([]byte("      cmdH=Math.max(2,Math.round(cmdV*100/maxVal));\n"))
+	w.Write([]byte("    }\n"))
+	w.Write([]byte("    var label=days[i];\n"))
+	w.Write([]byte("    if(labelStep>1&&i%labelStep!==0&&i!==days.length-1)label='';\n"))
+	w.Write([]byte("    var title=days[i]+' | 上行:'+incV+' 下行:'+outV+' 指令:'+cmdV;\n"))
+	w.Write([]byte("    html+='<div class=\"chart-bar\" title=\"'+title+'\"><div class=\"chart-bar-group\"><div class=\"chart-bar-inner incoming\" title=\"上行:'+incV+'\" style=\"height:'+incH+'px\"></div><div class=\"chart-bar-inner outgoing\" title=\"下行:'+outV+'\" style=\"height:'+outH+'px\"></div><div class=\"chart-bar-inner cmds\" title=\"指令:'+cmdV+'\" style=\"height:'+cmdH+'px\"></div></div><div class=\"chart-label\">'+label+'</div></div>';\n"))
+	w.Write([]byte("  }\n"))
+	w.Write([]byte("  wrap.innerHTML=html;\n"))
+	w.Write([]byte("  // Update mini totals\n"))
+	w.Write([]byte("  var mini=document.getElementById('trend-mini-cards');\n"))
+	w.Write([]byte("  if(mini){\n"))
+	w.Write([]byte("    var totalInc=0,totalOut=0,totalCmd=0;\n"))
+	w.Write([]byte("    for(var i=0;i<inc.length;i++)totalInc+=inc[i];\n"))
+	w.Write([]byte("    for(var i=0;i<out.length;i++)totalOut+=out[i];\n"))
+	w.Write([]byte("    for(var i=0;i<cmd.length;i++)totalCmd+=cmd[i];\n"))
+	w.Write([]byte("    var items=mini.querySelectorAll('.tm-val');\n"))
+	w.Write([]byte("    if(items.length>=3){items[0].textContent=totalInc;items[1].textContent=totalOut;items[2].textContent=totalCmd}\n"))
+	w.Write([]byte("    var lbls=mini.querySelectorAll('.tm-lbl');\n"))
+	w.Write([]byte("    if(lbls.length>=3){lbls[0].textContent=d.cnt+'\u65E5\u4E0A\u884C\u603B\u91CF';lbls[1].textContent=d.cnt+'\u65E5\u4E0B\u884C\u603B\u91CF';lbls[2].textContent=d.cnt+'\u65E5\u6307\u4EE4\u603B\u91CF'}\n"))
+	w.Write([]byte("  }\n"))
+	w.Write([]byte("}\n"))
+	w.Write([]byte("function connectSSE(){\n"))
 	w.Write([]byte("  sse=new EventSource('/admin/sse');\n"))
 	w.Write([]byte("  function appendLogRows(logs){\n"))
 	w.Write([]byte("    var tbody=document.querySelector('.log-table tbody');\n"))
@@ -1420,6 +1635,7 @@ w.Write([]byte("function connectSSE(){\n"))
 	w.Write([]byte("      if(d.t==='today'&&d.d)updateTodayCards(d.d);\n"))
 	w.Write([]byte("      if(d.t==='trend'&&d.d)updateTrendChart(d.d);\n"))
 	w.Write([]byte("      if(d.t==='db'&&d.d)updateDBCards(d.d);\n"))
+	w.Write([]byte("      if(d.t==='entities'&&d.d)updateEntities(d.d);\n"))
 	w.Write([]byte("      if(d.t==='logs'&&d.d)appendLogRows(d.d);\n"))
 	w.Write([]byte("    }catch(e2){}\n  };\n"))
 	w.Write([]byte("  sse.onopen=function(){document.getElementById('sse-status').className='connected'}\n"))
@@ -1462,6 +1678,34 @@ func writeResCard(w io.Writer, val, label string) {
 	w.Write([]byte("</div><div class=\"res-lbl\">"))
 	template.HTMLEscape(w, []byte(label))
 	w.Write([]byte("</div></div>\n"))
+}
+
+// formatBytes converts a byte count to a human-readable string.
+func formatBytes(b uint64) string {
+	switch {
+	case b >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GB", float64(b)/1024/1024/1024)
+	case b >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(b)/1024/1024)
+	case b >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(b)/1024)
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+// formatRate converts bytes per second to a human-readable string.
+func formatRate(bps float64) string {
+	switch {
+	case bps >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GB/s", bps/1024/1024/1024)
+	case bps >= 1024*1024:
+		return fmt.Sprintf("%.1f MB/s", bps/1024/1024)
+	case bps >= 1024:
+		return fmt.Sprintf("%.1f KB/s", bps/1024)
+	default:
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
 }
 
 // statusHTML returns a green ● if ok, or a gray ○ if not.

@@ -18,8 +18,8 @@ import (
 // ── System CPU ──
 
 var (
-	linuxCPUCacheMu  sync.Mutex
-	linuxCPUCache    struct {
+	linuxCPUCacheMu sync.Mutex
+	linuxCPUCache   struct {
 		idle  uint64
 		total uint64
 		time  time.Time
@@ -235,4 +235,73 @@ func getDiskFreeGB(path string) (freeGB, totalGB float64) {
 	totalGB = float64(stat.Blocks*uint64(stat.Bsize)) / 1024 / 1024 / 1024
 	freeGB = float64(stat.Bfree*uint64(stat.Bsize)) / 1024 / 1024 / 1024
 	return freeGB, totalGB
+}
+
+// getAllDiskInfo returns usage info for physical mount points on Linux.
+func getAllDiskInfo() []diskInfo {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var result []diskInfo
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		mp := fields[1]
+		fs := fields[2]
+		// Skip pseudo / virtual filesystems
+		switch fs {
+		case "proc", "sysfs", "tmpfs", "devtmpfs", "devpts",
+			"cgroup", "cgroup2", "pstore", "securityfs", "selinuxfs",
+			"autofs", "mqueue", "hugetlbfs", "configfs", "debugfs",
+			"tracefs", "ramfs", "overlay", "efivarfs", "bpf":
+			continue
+		}
+		// Skip common pseudo paths
+		if strings.HasPrefix(mp, "/sys") || strings.HasPrefix(mp, "/proc") ||
+			strings.HasPrefix(mp, "/dev") || strings.HasPrefix(mp, "/snap") {
+			continue
+		}
+		if seen[mp] {
+			continue
+		}
+		seen[mp] = true
+		free, total := getDiskFreeGB(mp)
+		if total > 0 {
+			result = append(result, diskInfo{
+				MountPoint: mp,
+				UsedGB:     total - free,
+				TotalGB:    total,
+				Percent:    (total - free) / total * 100,
+			})
+		}
+	}
+	return result
+}
+
+// getNetworkIO returns total bytes received and sent across all non-loopback interfaces.
+func getNetworkIO() (rxBytes, txBytes uint64) {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		iface := strings.TrimRight(fields[0], ":")
+		// Skip loopback
+		if iface == "lo" {
+			continue
+		}
+		rx, _ := strconv.ParseUint(fields[1], 10, 64)
+		tx, _ := strconv.ParseUint(fields[9], 10, 64)
+		rxBytes += rx
+		txBytes += tx
+	}
+	return rxBytes, txBytes
 }

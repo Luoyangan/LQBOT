@@ -11,12 +11,44 @@ import (
 )
 
 var (
-	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
 	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
-	procGetDiskFreeSpaceExW = kernel32.NewProc("GetDiskFreeSpaceExW")
+	procGetDiskFreeSpaceExW  = kernel32.NewProc("GetDiskFreeSpaceExW")
 	procGetProcessTimes      = kernel32.NewProc("GetProcessTimes")
 	procGetSystemTimes       = kernel32.NewProc("GetSystemTimes")
+	iphlpapi                 = syscall.NewLazyDLL("iphlpapi.dll")
+	procGetIfTable           = iphlpapi.NewProc("GetIfTable")
 )
+
+const maxInterfaceNameLen = 256
+const maxlIfDescr = 256
+
+type mibIFRow struct {
+	wszName           [maxInterfaceNameLen]uint16
+	dwIndex           uint32
+	dwType            uint32
+	dwMtu             uint32
+	dwSpeed           uint32
+	dwPhysAddrLen     uint32
+	bPhysAddr         [8]byte
+	dwAdminStatus     uint32
+	dwOperStatus      uint32
+	dwLastChange      uint32
+	dwInOctets        uint32
+	dwInUcastPkts     uint32
+	dwInNUcastPkts    uint32
+	dwInDiscards      uint32
+	dwInErrors        uint32
+	dwInUnknownProtos uint32
+	dwOutOctets       uint32
+	dwOutUcastPkts    uint32
+	dwOutNUcastPkts   uint32
+	dwOutDiscards     uint32
+	dwOutErrors       uint32
+	dwOutQLen         uint32
+	dwDescrLen        uint32
+	bDescr            [maxlIfDescr]byte
+}
 
 type memoryStatusEx struct {
 	dwLength                uint32
@@ -41,8 +73,8 @@ func (ft filetime) nanosec() int64 {
 
 // cpuCache stores the previous system CPU reading for delta calculation.
 var (
-	cpuCacheMu  sync.Mutex
-	cpuCache    struct {
+	cpuCacheMu sync.Mutex
+	cpuCache   struct {
 		idle  int64
 		total int64
 		time  time.Time
@@ -167,4 +199,61 @@ func getDiskFreeGB(path string) (freeGB, totalGB float64) {
 	freeGB = float64(freeBytes) / 1024 / 1024 / 1024
 	totalGB = float64(totalBytes) / 1024 / 1024 / 1024
 	return freeGB, totalGB
+}
+
+// getAllDiskInfo returns usage info for all available drives on Windows.
+func getAllDiskInfo() []diskInfo {
+	procGetLogicalDrives := kernel32.NewProc("GetLogicalDrives")
+	ret, _, _ := procGetLogicalDrives.Call()
+	if ret == 0 {
+		return nil
+	}
+	driveMask := uint32(ret)
+	var result []diskInfo
+	for i := 0; i < 26; i++ {
+		if driveMask&(1<<i) != 0 {
+			letter := string(rune('A' + i))
+			free, total := getDiskFreeGB(letter + ":\\")
+			if total > 0 {
+				result = append(result, diskInfo{
+					MountPoint: letter + ":",
+					UsedGB:     total - free,
+					TotalGB:    total,
+					Percent:    (total - free) / total * 100,
+				})
+			}
+		}
+	}
+	return result
+}
+
+// getNetworkIO returns total bytes received and sent across all interfaces.
+func getNetworkIO() (rxBytes, txBytes uint64) {
+	// First call to get required buffer size
+	var bufSize uint32
+	ret, _, _ := procGetIfTable.Call(0, uintptr(unsafe.Pointer(&bufSize)), 0)
+	if ret != 122 /* ERROR_INSUFFICIENT_BUFFER */ && ret != 0 /* NO_ERROR */ {
+		return 0, 0
+	}
+	if bufSize == 0 {
+		return 0, 0
+	}
+	buf := make([]byte, bufSize)
+	ret, _, _ = procGetIfTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bufSize)), 0)
+	if ret != 0 {
+		return 0, 0
+	}
+	numEntries := *(*uint32)(unsafe.Pointer(&buf[0]))
+	rowSize := uint32(unsafe.Sizeof(mibIFRow{}))
+	for i := uint32(0); i < numEntries; i++ {
+		offset := 4 + i*rowSize // 4 bytes for dwNumEntries
+		row := (*mibIFRow)(unsafe.Pointer(&buf[offset]))
+		// Skip loopback (type 24 = IF_TYPE_SOFTWARE_LOOPBACK)
+		if row.dwType == 24 {
+			continue
+		}
+		rxBytes += uint64(row.dwInOctets)
+		txBytes += uint64(row.dwOutOctets)
+	}
+	return rxBytes, txBytes
 }
