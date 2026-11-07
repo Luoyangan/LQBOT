@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="settings_bg">#0F172A</color>
+    <color name="settings_title">#E5E7EB</color>
+    <color name="settings_hint">#94A3B8</color>
+    <color name="main_bg">#0F172A</color>
+    <color name="main_title">#E5E7EB</color>
+    <color name="main_hint">#94A3B8</color>
+</resources>

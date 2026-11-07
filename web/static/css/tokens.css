@@ -1,0 +1,229 @@
+/* Design Tokens 2.0：颜色 / 排版 / 间距 / 形状 / 层级 / 动效（亮暗双主题）。
+ * 约定：业务样式只引用这里的变量，不写死颜色、字号、阴影与动画时长。 */
+
+:root {
+  color-scheme: light;
+  --scrollbar-thumb: rgb(17 24 39 / 0.18);
+  --scrollbar-thumb-hover: rgb(17 24 39 / 0.34);
+
+  /* ---- 颜色（亮主题） ---- */
+  --color-bg: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f4f9;
+  --color-surface-3: #e8edf5;
+  --color-border: #e3e8ef;
+  --color-border-strong: #cbd4e1;
+  --color-text: #111827;
+  --color-text-2: #4b5563;
+  --color-text-3: #8b95a5;
+
+  /* 兼容旧变量名（历史样式与内联样式中仍在引用） */
+  --color-text-1: var(--color-text);
+  --color-bg-2: var(--color-surface-2);
+
+  /* 侧栏 / 顶栏底色：默认跟随卡片底色，外观页可单独自定义 */
+  --sidebar-bg: var(--color-surface);
+  --topbar-bg: color-mix(in srgb, var(--color-surface) 92%, transparent);
+
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-active: #1e40af;
+  --color-primary-text: #ffffff;
+  --color-primary-weak: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  --color-primary-soft: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface));
+
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-info: #0891b2;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+
+  /* ---- 形状 ---- */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-full: 999px;
+
+  /* ---- 排版 ---- */
+  --font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size: 14px;
+  --font-size-md: 15px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 30px;
+  --line-height: 1.55;
+  --line-height-tight: 1.25;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --code-font-size: 13px;
+
+  /* ---- 间距（8pt 网格） ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+
+  /* ---- 控件与骨架 ---- */
+  --control-height-sm: 28px;
+  --control-height: 36px;
+  --control-height-lg: 42px;
+  --sidebar-width: 236px;
+  --topbar-height: 56px;
+  --content-max: 1560px;
+
+  /* ---- 层级 ---- */
+  --z-toast: 1000;
+  --z-modal: 1100;
+  --z-nav-backdrop: 15;
+  --z-nav-drawer: 20;
+
+  /* ---- 焦点态 ---- */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--color-primary) 26%, transparent);
+
+  /* ---- 阴影（克制的三层光感） ---- */
+  --shadow-xs: 0 1px 2px rgb(17 24 39 / 0.05);
+  --shadow-sm: 0 1px 2px rgb(17 24 39 / 0.06), 0 1px 3px rgb(17 24 39 / 0.05);
+  --shadow: 0 2px 4px rgb(17 24 39 / 0.06), 0 8px 24px rgb(17 24 39 / 0.08);
+  --shadow-md: 0 4px 12px rgb(17 24 39 / 0.08), 0 16px 40px rgb(17 24 39 / 0.10);
+  --shadow-lg: 0 8px 24px rgb(17 24 39 / 0.10), 0 32px 64px rgb(17 24 39 / 0.12);
+  --shadow-primary: 0 6px 16px color-mix(in srgb, var(--color-primary) 26%, transparent);
+
+  /* ---- 动效 ---- */
+  --duration-fast: 120ms;
+  --duration: 200ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --scrollbar-thumb: rgb(230 237 243 / 0.18);
+  --scrollbar-thumb-hover: rgb(230 237 243 / 0.36);
+
+  --color-bg: #0d1117;
+  --color-surface: #151b23;
+  --color-surface-2: #1c232e;
+  --color-surface-3: #232c39;
+  --color-border: #2a3543;
+  --color-border-strong: #3a4757;
+  --color-text: #e6edf3;
+  --color-text-2: #a9b6c6;
+  --color-text-3: #75828f;
+
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-primary-active: #2563eb;
+
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-info: #22b8cf;
+  --color-danger: #f85149;
+  --color-danger-hover: #ff6b63;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.45), 0 1px 3px rgb(0 0 0 / 0.35);
+  --shadow: 0 2px 4px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.45), 0 16px 40px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 8px 24px rgb(0 0 0 / 0.5), 0 32px 64px rgb(0 0 0 / 0.55);
+}
+
+/* 圆角档位（外观页可调，映射 --radius-*） */
+[data-radius="sm"] {
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}
+
+[data-radius="lg"] {
+  --radius-xs: 6px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius: 20px;
+  --radius-lg: 26px;
+  --radius-xl: 32px;
+}
+
+/* 卡片阴影档位（外观页可调）：无 / 轻 / 强（默认 soft 即 tokens 基线） */
+[data-shadow="none"] {
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+}
+
+[data-shadow="strong"] {
+  --shadow-xs: 0 1px 3px rgb(15 23 42 / 0.10);
+  --shadow-sm: 0 2px 6px rgb(15 23 42 / 0.10), 0 8px 24px rgb(15 23 42 / 0.10);
+  --shadow: 0 6px 16px rgb(15 23 42 / 0.14), 0 20px 48px rgb(15 23 42 / 0.16);
+  --shadow-md: 0 10px 28px rgb(15 23 42 / 0.18), 0 32px 72px rgb(15 23 42 / 0.18);
+  --shadow-lg: 0 16px 40px rgb(15 23 42 / 0.20), 0 48px 96px rgb(15 23 42 / 0.22);
+}
+
+/* 密度档位：紧凑时收紧间距、控件高度与字号 */
+[data-density="compact"] {
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --control-height-sm: 26px;
+  --control-height: 30px;
+  --control-height-lg: 36px;
+  --font-size-xs: 10px;
+  --font-size-sm: 11px;
+  --font-size: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 15px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 22px;
+}
+
+/* 滚动条：统一配色（纵向/横向同款），随亮暗主题切换。
+ * 标准属性 scrollbar-width / scrollbar-color 为继承属性，写在根元素即可覆盖所有滚动容器；
+ * 支持标准属性的引擎会忽略 ::-webkit-scrollbar，故旧引擎回退写在 @supports not 内。 */
+:root {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+}

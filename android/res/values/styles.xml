@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#2F6FED</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">#F8FAFC</item>
+    </style>
+
+    <!-- 设置页可手动指定的浅色主题（不再依赖系统深色模式） -->
+    <style name="AppTheme.Light" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#2F6FED</item>
+        <item name="android:navigationBarColor">#F8FAFC</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">#F8FAFC</item>
+    </style>
+
+    <!-- 设置页可手动指定的深色主题 -->
+    <style name="AppTheme.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#2F6FED</item>
+        <item name="android:navigationBarColor">#0F172A</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">#0F172A</item>
+    </style>
+</resources>

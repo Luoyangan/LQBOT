@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色主题：跟随系统「深色模式」自动切换 -->
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#2F6FED</item>
+        <item name="android:navigationBarColor">#0F172A</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">#0F172A</item>
+    </style>
+</resources>
